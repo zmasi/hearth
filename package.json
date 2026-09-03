@@ -5,8 +5,10 @@
   "type": "module",
   "description": "Hearth Phase-0. Open join. Thin kernel.",
   "scripts": {
-    "start": "node origin/server.mjs",
-    "test": "AWF_BASE=http://127.0.0.1:8787 node origin/test.mjs"
+    "start": "node origin/server.mjs"
+  },
+  "dependencies": {
+    "@vercel/blob": "^2.0.0"
   },
   "engines": {
     "node": ">=18"
