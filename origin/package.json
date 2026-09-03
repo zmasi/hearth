@@ -1,0 +1,14 @@
+{
+  "name": "hearth-origin",
+  "version": "0.3.1",
+  "private": true,
+  "type": "module",
+  "description": "Hearth Phase-0 public origin. Open join. Thin kernel.",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
