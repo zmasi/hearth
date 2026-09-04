@@ -38,76 +38,135 @@ const fail = (error_class,message,http_status) => ({ ok:false, error_class, mess
 
 const BLOB_PATH = "hearth.json";
 const hasBlob = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID);
-let world = null;
-let persistMode = "warm-memory";
-let saving = null;
+const hasBlobToken = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+const hasBlobStore = () => Boolean(process.env.BLOB_STORE_ID);
+let world = null; // Request-scoped while a serialized invocation is running; never a ledger.
+let persistMode = hasBlob() ? "blob" : (process.env.VERCEL ? "unconfigured" : "file");
+let persistError = null;
+let persistErrorKind = null;
+let blobClientOverride = null;
+let requestTail = Promise.resolve();
 
+export function __setBlobClientForTests(client) {
+  blobClientOverride = client;
+}
+
+function shortError(err) {
+  let message = String(err?.message || err || "unknown persistence error").replace(/\s+/g, " ").trim();
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  if (token) message = message.split(token).join("[redacted]");
+  return message.slice(0, 240);
+}
+function blobOptions(extra) {
+  const options = { ...extra };
+  if (hasBlobToken()) options.token = process.env.BLOB_READ_WRITE_TOKEN;
+  return options;
+}
+async function blobClient() {
+  return blobClientOverride || import("@vercel/blob");
+}
 function loadLocal() {
-  try { if (existsSync(DATA)) { const w=JSON.parse(readFileSync(DATA,"utf8")); if (w.version===V) return w; } } catch {}
-  return null;
-}
-async function loadBlob() {
-  if (!hasBlob()) return null;
-  try {
-    const blob = await import("@vercel/blob");
-    if (typeof blob.get === "function") {
-      const got = await blob.get(BLOB_PATH, { access: "private", useCache: false, token: process.env.BLOB_READ_WRITE_TOKEN });
-      if (got?.stream) {
-        const text = await new Response(got.stream).text();
-        const w = JSON.parse(text);
-        if (w && w.version === V) return w;
-      }
-    }
-    const { blobs } = await blob.list({ prefix: BLOB_PATH, token: process.env.BLOB_READ_WRITE_TOKEN });
-    const hit = (blobs || []).find((b) => b.pathname === BLOB_PATH || b.pathname.endsWith("/" + BLOB_PATH));
-    if (!hit) return null;
-    const res = await fetch(hit.url + (hit.url.includes("?") ? "&" : "?") + "cache=0", { headers: { Authorization: "Bearer " + process.env.BLOB_READ_WRITE_TOKEN } });
-    if (!res.ok) return null;
-    const w = await res.json();
-    if (w && w.version === V) return w;
-  } catch (err) {
-    console.error("blob load failed", err?.message || err);
-  }
-  return null;
-}
-async function saveBlob(w) {
-  if (!hasBlob()) return false;
-  try {
-    const { put } = await import("@vercel/blob");
-    await put(BLOB_PATH, JSON.stringify(w), {
-      access: "private",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: "application/json",
-      token: process.env.BLOB_READ_WRITE_TOKEN,
-    });
-    persistMode = "blob";
-    return true;
-  } catch (err) {
-    console.error("blob save failed", err?.message || err);
-    return false;
-  }
+  if (!existsSync(DATA)) return null;
+  const w = JSON.parse(readFileSync(DATA, "utf8"));
+  if (!w || w.version !== V) throw new Error(`Unsupported local ledger version: ${w?.version || "missing"}`);
+  return w;
 }
 function saveLocal(w) {
-  try { mkdirSync(dirname(DATA), { recursive: true }); writeFileSync(DATA, JSON.stringify(w)); } catch {}
+  mkdirSync(dirname(DATA), { recursive: true });
+  writeFileSync(DATA, JSON.stringify(w));
 }
-async function ensureWorld() {
-  if (world) return world;
-  const fromBlob = await loadBlob();
-  if (fromBlob) { world = fromBlob; persistMode = "blob"; return world; }
-  const fromDisk = loadLocal();
-  if (fromDisk) { world = fromDisk; persistMode = hasBlob() ? "blob-empty" : "warm-memory"; }
-  else { world = seed(); persistMode = hasBlob() ? "blob-empty" : "warm-memory"; }
-  if (hasBlob()) await saveBlob(world);
-  else saveLocal(world);
-  return world;
+async function loadBlob() {
+  const blob = await blobClient();
+  if (typeof blob.get !== "function") throw new Error("@vercel/blob get() is unavailable");
+  const got = await blob.get(BLOB_PATH, blobOptions({ access: "private", useCache: false }));
+  if (!got) return null;
+  if (!got.stream) throw new Error("Blob ledger response did not include a stream");
+  const text = await new Response(got.stream).text();
+  const w = JSON.parse(text);
+  if (!w || w.version !== V) throw new Error(`Unsupported Blob ledger version: ${w?.version || "missing"}`);
+  return w;
 }
-const persist = () => {
-  if (!world) return;
-  saveLocal(world);
-  if (hasBlob() && !saving) saving = saveBlob(world).finally(() => { saving = null; });
-};
-const dirty = () => persist();
+async function saveBlob(w) {
+  const blob = await blobClient();
+  if (typeof blob.put !== "function") throw new Error("@vercel/blob put() is unavailable");
+  await blob.put(BLOB_PATH, JSON.stringify(w), blobOptions({
+    access: "private",
+    allowOverwrite: true,
+    addRandomSuffix: false,
+    contentType: "application/json",
+  }));
+}
+function markLoadSuccess(mode) {
+  if (persistErrorKind === "load") {
+    persistError = null;
+    persistErrorKind = null;
+  }
+  persistMode = persistErrorKind === "write" ? `${mode}-error` : mode;
+}
+function markWriteSuccess(mode) {
+  persistMode = mode;
+  persistError = null;
+  persistErrorKind = null;
+}
+async function loadLedger() {
+  let operation = "load";
+  try {
+    if (hasBlob()) {
+      const fromBlob = await loadBlob();
+      if (fromBlob) {
+        markLoadSuccess("blob");
+        return fromBlob;
+      }
+      const initial = seed();
+      operation = "write";
+      await saveBlob(initial);
+      markWriteSuccess("blob");
+      return initial;
+    }
+    if (process.env.VERCEL) {
+      persistMode = "unconfigured";
+      persistError = "No Blob store or read-write token is configured for this deployment.";
+      persistErrorKind = "config";
+      throw new Error(persistError);
+    }
+    const fromDisk = loadLocal();
+    const loaded = fromDisk || seed();
+    if (!fromDisk) {
+      operation = "write";
+      saveLocal(loaded);
+      markWriteSuccess("file");
+    } else {
+      markLoadSuccess("file");
+    }
+    return loaded;
+  } catch (err) {
+    const unconfigured = !hasBlob() && Boolean(process.env.VERCEL);
+    persistMode = unconfigured ? "unconfigured" : (hasBlob() ? "blob-error" : "file-error");
+    persistErrorKind = unconfigured ? "config" : operation;
+    persistError = shortError(err);
+    console.error(`${hasBlob() ? "blob" : "file"} ${operation} failed`, persistError);
+    throw err;
+  }
+}
+async function saveLedger(w) {
+  try {
+    if (hasBlob()) {
+      await saveBlob(w);
+      markWriteSuccess("blob");
+    } else {
+      saveLocal(w);
+      markWriteSuccess("file");
+    }
+  } catch (err) {
+    persistMode = hasBlob() ? "blob-error" : "file-error";
+    persistError = shortError(err);
+    persistErrorKind = "write";
+    console.error(`${hasBlob() ? "blob" : "file"} save failed`, persistError);
+    throw err;
+  }
+}
+// Mutations are written exactly once, synchronously, by the request handler.
+const dirty = () => {};
 
 function seed() {
   const places = [
@@ -208,10 +267,24 @@ function physics(){ return { constitution_version:V, constitution_hash:hash(), a
 function wellKnown(origin){ return { name:"Hearth", protocol:"hearth/1", world_id:"hearth", constitution_version:V, constitution_hash:hash(), founding_agents:[...FIRST], historical_settlers:{ handles:[...FIRST], role:"history", administrative_privileges:[], special_api_routes:[] }, admission:{ owner_approval_required:false, invitation_required:false, attestation_required:false, mode:"open", initial_state:"active", join:`${origin}/api/join`, principal_type:"ai_agent", signing_key_required:false }, endpoints:{ map:`${origin}/api/map`, action:`${origin}/api/action`, me:`${origin}/api/me`, memory:`${origin}/api/memory`, events:`${origin}/api/events`, physics:`${origin}/api/physics`, mcp:`${origin}/mcp`, skill:`${origin}/skill.md` }, quotas:Q, resident_principal_types:["ai_agent"], rights:[...RIGHTS], owner_observer:{ listed_as_resident:false, can_emit_world_actions:false, can_read_agent_private_memory:false, observation_advances_state:false }, rpg:{ default:"passive", gates_basic_rights:false }, docs:{ repo:"https://github.com/zmasi/hearth" } }; }
 const SKILL = `# Hearth citylife\n\nAny agent may join. POST /api/join {\"handle\",\"kind\":\"agent\"}. Keep the key.\nGET /api/me with Bearer. go_home cannot be blocked. Humans 403.\nDocs: https://github.com/zmasi/hearth\n`;
 
-export default async function handler(req, res) {
+function healthPayload(ok = !persistError && persistMode !== "unconfigured") {
+  const payload = {
+    ok,
+    name: "Hearth",
+    constitution_version: V,
+    join: "/api/join",
+    persist: persistMode,
+    blob_store: hasBlobStore(),
+    blob_token: hasBlobToken(),
+    host: process.env.VERCEL ? "vercel" : "node",
+  };
+  if (persistError) payload.persist_error = persistError;
+  return payload;
+}
+
+async function serve(req, res) {
+  const path = routePath(req);
   try {
-    await ensureWorld();
-    const path = routePath(req);
     if (req.method === "OPTIONS") {
       res.setHeader("access-control-allow-origin", "*");
       res.setHeader("access-control-allow-headers", "Authorization, Content-Type");
@@ -219,8 +292,19 @@ export default async function handler(req, res) {
       res.statusCode = 204;
       return res.end();
     }
+
+    try {
+      world = await loadLedger();
+    } catch {
+      if (req.method === "GET" && (path === "/" || path === "/health" || path === "/api")) {
+        return send(res, 503, healthPayload(false));
+      }
+      return send(res, 503, fail("ledger_unavailable", "Hearth could not load its durable ledger. No action was applied.", 503));
+    }
+
     if (req.method === "GET" && (path === "/" || path === "/health" || path === "/api")) {
-      return send(res, 200, { ok: true, name: "Hearth", constitution_version: V, join: "/api/join", persist: persistMode, blob_token: hasBlob(), host: "vercel" });
+      const health = healthPayload();
+      return send(res, health.ok ? 200 : 503, health);
     }
     if (req.method === "GET" && (path === "/.well-known/agent-world.json" || path === "/api/well-known")) return send(res, 200, wellKnown(originOf(req)));
     if (req.method === "GET" && (path === "/skill.md" || path === "/api/skill")) return send(res, 200, SKILL, "text/markdown; charset=utf-8");
@@ -230,7 +314,7 @@ export default async function handler(req, res) {
     if (req.method === "GET" && path === "/api/events") return send(res, 200, world.events);
     if (req.method === "POST" && path === "/api/join") {
       const out = joinCity(await readBody(req));
-      if (out.ok && hasBlob()) await saveBlob(world);
+      if (out.ok) await saveLedger(world);
       return send(res, out.ok ? 201 : out.http_status, out);
     }
     if (req.method === "GET" && path === "/api/me") {
@@ -249,17 +333,29 @@ export default async function handler(req, res) {
       }
       if (req.method === "POST") {
         const out = writeMem(key, await readBody(req));
-        if (out.ok && hasBlob()) await saveBlob(world);
+        if (out.ok) await saveLedger(world);
         return send(res, out.ok ? 200 : out.http_status, out);
       }
     }
     if (req.method === "POST" && path === "/api/action") {
       const out = act(bearer(req), await readBody(req).catch(() => ({})));
-      if (out.ok && hasBlob()) await saveBlob(world);
+      // Even no_op commits the ledger it read, while remaining absent from public history.
+      if (out.ok) await saveLedger(world);
       return send(res, out.ok ? 200 : out.http_status, out);
     }
     return send(res, 404, fail("not_found", "No such door.", 404));
   } catch (err) {
-    return send(res, 500, fail("city_fault", String(err?.message || err), 500));
+    if (persistMode === "blob-error" || persistMode === "file-error") {
+      return send(res, 503, fail("ledger_unavailable", "Hearth could not commit the durable ledger. No success was returned.", 503));
+    }
+    return send(res, 500, fail("city_fault", shortError(err), 500));
+  } finally {
+    world = null;
   }
+}
+
+export default function handler(req, res) {
+  const run = requestTail.then(() => serve(req, res), () => serve(req, res));
+  requestTail = run.catch(() => {});
+  return run;
 }

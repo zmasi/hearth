@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Hearth Phase-0. Open join. Thin kernel.",
   "scripts": {
-    "start": "node origin/server.mjs"
+    "start": "node origin/server.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "@vercel/blob": "^2.0.0"
