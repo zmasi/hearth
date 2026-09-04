@@ -1,6 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { attachDatabasePool } from "@vercel/functions";
+import { Pool } from "pg";
 
 const PORT = Number(process.env.PORT || 8787);
 const DATA = resolve(process.env.HEARTH_DATA || "/tmp/hearth.json");
@@ -37,30 +40,86 @@ const nid = (p) => `${p}_${randomBytes(5).toString("hex")}`;
 const fail = (error_class,message,http_status) => ({ ok:false, error_class, message, http_status });
 
 const BLOB_PATH = "hearth.json";
+const MIGRATION_FLAG = "HEARTH_MIGRATE_FROM_BLOB";
+const MIGRATION_LOCK_ID = "310420260903";
+const MIGRATION_QUIET_MS = Math.max(0, Number(process.env.HEARTH_MIGRATION_QUIET_MS ?? 5000));
+const MAX_REQUEST_BYTES = 128 * 1024;
+const HEARTH_LEDGER_SCHEMA = `CREATE TABLE IF NOT EXISTS hearth_ledger (
+  id smallint PRIMARY KEY CHECK (id = 1),
+  world jsonb NOT NULL CHECK (jsonb_typeof(world) = 'object'),
+  constitution_version text NOT NULL,
+  revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+  migrated_from text NOT NULL,
+  migrated_sha256 text NOT NULL CHECK (migrated_sha256 ~ '^[0-9a-f]{64}$'),
+  migrated_blob_etag text,
+  migrated_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+)`;
+const hasDatabase = () => Boolean(process.env.DATABASE_URL);
 const hasBlob = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID);
 const hasBlobToken = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 const hasBlobStore = () => Boolean(process.env.BLOB_STORE_ID);
+const configuredMode = () => hasDatabase() ? "postgres" : (hasBlob() ? "blob" : (process.env.VERCEL ? "unconfigured" : "file"));
 let world = null; // Request-scoped while a serialized invocation is running; never a ledger.
-let persistMode = hasBlob() ? "blob" : (process.env.VERCEL ? "unconfigured" : "file");
+let persistMode = configuredMode();
 let persistError = null;
 let persistErrorKind = null;
 let blobClientOverride = null;
+let databasePoolOverride = null;
+let databasePoolInstance = null;
+let migrationBootstrapPromise = null;
 let requestTail = Promise.resolve();
 
 export function __setBlobClientForTests(client) {
   blobClientOverride = client;
 }
 
+export function __setPostgresPoolForTests(pool) {
+  databasePoolOverride = pool;
+}
+
 function shortError(err) {
   let message = String(err?.message || err || "unknown persistence error").replace(/\s+/g, " ").trim();
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  if (token) message = message.split(token).join("[redacted]");
+  for (const secret of [
+    process.env.BLOB_READ_WRITE_TOKEN,
+    process.env.DATABASE_URL,
+    process.env.DATABASE_URL_UNPOOLED,
+    process.env.POSTGRES_URL,
+    process.env.POSTGRES_URL_NON_POOLING,
+    process.env.PGPASSWORD,
+    process.env.POSTGRES_PASSWORD,
+  ]) {
+    if (secret) message = message.split(secret).join("[redacted]");
+  }
   return message.slice(0, 240);
 }
+
+function recordPersistenceFailure(operation, err) {
+  const unconfigured = !hasDatabase() && !hasBlob() && Boolean(process.env.VERCEL);
+  const failureKind = unconfigured ? "config" : operation;
+  const failureMessage = shortError(err);
+  const mode = configuredMode();
+  persistMode = unconfigured ? "unconfigured" : `${mode}-error`;
+  // A read outcome cannot prove that a previously failed mutation was committed.
+  // Retain that write failure until markWriteSuccess() observes a durable write.
+  if (persistErrorKind !== "write" || failureKind === "write") {
+    persistErrorKind = failureKind;
+    persistError = failureMessage;
+  }
+  console.error(`${mode} ${operation} failed`, failureMessage);
+}
+
 function blobOptions(extra) {
   const options = { ...extra };
   if (hasBlobToken()) options.token = process.env.BLOB_READ_WRITE_TOKEN;
   return options;
+}
+function verifiedPostgresUrl(value) {
+  const url = new URL(value);
+  if (["prefer", "require", "verify-ca"].includes(url.searchParams.get("sslmode"))) {
+    url.searchParams.set("sslmode", "verify-full");
+  }
+  return url.toString();
 }
 async function blobClient() {
   return blobClientOverride || import("@vercel/blob");
@@ -86,6 +145,37 @@ async function loadBlob() {
   if (!w || w.version !== V) throw new Error(`Unsupported Blob ledger version: ${w?.version || "missing"}`);
   return w;
 }
+
+async function readMigrationBlobSnapshot(ifNoneMatch = undefined) {
+  const blob = await blobClient();
+  if (typeof blob.get !== "function") throw new Error("@vercel/blob get() is unavailable");
+  const got = await blob.get(BLOB_PATH, blobOptions({
+    access: "private",
+    useCache: false,
+    ...(ifNoneMatch ? { ifNoneMatch } : {}),
+  }));
+  if (got?.statusCode === 304) return { unchanged: true, etag: got.blob?.etag || ifNoneMatch };
+  if (!got?.stream) throw new Error("Blob migration source hearth.json is missing");
+  const source = JSON.parse(await new Response(got.stream).text());
+  if (!source || source.version !== V) {
+    throw new Error(`Unsupported Blob ledger version: ${source?.version || "missing"}`);
+  }
+  if (containsNul(source)) throw new Error("Blob ledger contains a NUL character that PostgreSQL jsonb cannot preserve");
+  const etag = got.blob?.etag;
+  if (!etag) throw new Error("Blob migration source did not include an ETag");
+  return { unchanged: false, etag, world: source };
+}
+
+async function loadStableMigrationSource() {
+  let snapshot = await readMigrationBlobSnapshot();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await delay(MIGRATION_QUIET_MS);
+    const checked = await readMigrationBlobSnapshot(snapshot.etag);
+    if (checked.unchanged) return snapshot;
+    snapshot = checked;
+  }
+  throw new Error("Blob ledger did not remain unchanged for the migration quiet window");
+}
 async function saveBlob(w) {
   const blob = await blobClient();
   if (typeof blob.put !== "function") throw new Error("@vercel/blob put() is unavailable");
@@ -96,8 +186,107 @@ async function saveBlob(w) {
     contentType: "application/json",
   }));
 }
+
+function getDatabasePool() {
+  if (databasePoolOverride) return databasePoolOverride;
+  if (!databasePoolInstance) {
+    if (!hasDatabase()) throw new Error("DATABASE_URL is not configured");
+    databasePoolInstance = new Pool({ connectionString: verifiedPostgresUrl(process.env.DATABASE_URL) });
+    attachDatabasePool(databasePoolInstance);
+  }
+  return databasePoolInstance;
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function worldDigest(value) {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+async function bootstrapPostgresFromBlob() {
+  const client = await getDatabasePool().connect();
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN");
+    transactionOpen = true;
+    await client.query("SET LOCAL statement_timeout = '30000ms'");
+    await client.query("SET LOCAL lock_timeout = '10000ms'");
+    await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [MIGRATION_LOCK_ID]);
+    await client.query(HEARTH_LEDGER_SCHEMA);
+    const existing = await client.query("SELECT world FROM hearth_ledger WHERE id = $1 FOR UPDATE", [1]);
+    if (existing.rows.length === 0) {
+      const snapshot = await loadStableMigrationSource();
+      const source = snapshot.world;
+      await client.query(
+        `INSERT INTO hearth_ledger
+          (id, world, constitution_version, revision, migrated_from, migrated_sha256, migrated_blob_etag)
+         VALUES ($1, $2::jsonb, $3, 1, $4, $5, $6)`,
+        [1, JSON.stringify(source), V, `vercel-blob:${BLOB_PATH}`, worldDigest(source), snapshot.etag],
+      );
+    } else {
+      const current = existing.rows[0].world;
+      if (!current || current.version !== V) {
+        throw new Error(`Unsupported Postgres ledger version: ${current?.version || "missing"}`);
+      }
+    }
+    await client.query("COMMIT");
+    transactionOpen = false;
+  } catch (err) {
+    if (transactionOpen) {
+      try { await client.query("ROLLBACK"); } catch {}
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function migrateFromBlobIfEnabled() {
+  if (!hasDatabase() || process.env[MIGRATION_FLAG] !== "1") return;
+  if (!migrationBootstrapPromise) {
+    migrationBootstrapPromise = bootstrapPostgresFromBlob().catch((err) => {
+      migrationBootstrapPromise = null;
+      recordPersistenceFailure("load", err);
+      throw err;
+    });
+  }
+  await migrationBootstrapPromise;
+}
+
+async function loadPostgres(queryable, forUpdate = false) {
+  const result = await queryable.query(
+    `SELECT world FROM hearth_ledger WHERE id = $1${forUpdate ? " FOR UPDATE" : ""}`,
+    [1],
+  );
+  if (result.rows.length !== 1) throw new Error("Postgres ledger row is missing");
+  const w = result.rows[0].world;
+  if (!w || w.version !== V) throw new Error(`Unsupported Postgres ledger version: ${w?.version || "missing"}`);
+  return w;
+}
+
+async function savePostgres(client, w) {
+  const result = await client.query(
+    `UPDATE hearth_ledger
+       SET world = $1::jsonb,
+           constitution_version = $2,
+           revision = revision + 1,
+           updated_at = now()
+     WHERE id = $3`,
+    [JSON.stringify(w), V, 1],
+  );
+  if (result.rowCount !== 1) throw new Error("Postgres ledger row disappeared during update");
+}
+
 function markLoadSuccess(mode) {
-  if (persistErrorKind === "load") {
+  // Postgres health is current reachability, not an isolate-local history bit.
+  // Mutation responses carry any outcome uncertainty at the request boundary.
+  if (mode === "postgres" || persistErrorKind === "load") {
     persistError = null;
     persistErrorKind = null;
   }
@@ -108,9 +297,14 @@ function markWriteSuccess(mode) {
   persistError = null;
   persistErrorKind = null;
 }
-async function loadLedger() {
+async function loadLedger({ client = null, forUpdate = false } = {}) {
   let operation = "load";
   try {
+    if (hasDatabase()) {
+      const loaded = await loadPostgres(client || getDatabasePool(), forUpdate);
+      markLoadSuccess("postgres");
+      return loaded;
+    }
     if (hasBlob()) {
       const fromBlob = await loadBlob();
       if (fromBlob) {
@@ -140,23 +334,18 @@ async function loadLedger() {
     }
     return loaded;
   } catch (err) {
-    const unconfigured = !hasBlob() && Boolean(process.env.VERCEL);
-    const failureKind = unconfigured ? "config" : operation;
-    const failureMessage = shortError(err);
-    persistMode = unconfigured ? "unconfigured" : (hasBlob() ? "blob-error" : "file-error");
-    // A read outcome cannot prove that a previously failed mutation was committed.
-    // Retain that write failure until markWriteSuccess() observes a durable write.
-    if (persistErrorKind !== "write" || failureKind === "write") {
-      persistErrorKind = failureKind;
-      persistError = failureMessage;
-    }
-    console.error(`${hasBlob() ? "blob" : "file"} ${operation} failed`, failureMessage);
+    recordPersistenceFailure(operation, err);
     throw err;
   }
 }
-async function saveLedger(w) {
+async function saveLedger(w, { client = null } = {}) {
   try {
-    if (hasBlob()) {
+    if (hasDatabase()) {
+      if (!client) throw new Error("Postgres mutations require an open transaction");
+      await savePostgres(client, w);
+      // The caller marks success only after COMMIT returns.
+      return;
+    } else if (hasBlob()) {
       await saveBlob(w);
       markWriteSuccess("blob");
     } else {
@@ -164,13 +353,55 @@ async function saveLedger(w) {
       markWriteSuccess("file");
     }
   } catch (err) {
-    persistMode = hasBlob() ? "blob-error" : "file-error";
-    persistError = shortError(err);
-    persistErrorKind = "write";
-    console.error(`${hasBlob() ? "blob" : "file"} save failed`, persistError);
+    recordPersistenceFailure("write", err);
     throw err;
   }
 }
+
+async function openDatabaseTransaction() {
+  let client = null;
+  try {
+    client = await getDatabasePool().connect();
+    await client.query("BEGIN");
+    await client.query("SET LOCAL statement_timeout = '15000ms'");
+    await client.query("SET LOCAL lock_timeout = '5000ms'");
+    return client;
+  } catch (err) {
+    if (client) {
+      let destroy = false;
+      try { await client.query("ROLLBACK"); } catch { destroy = true; }
+      client.release(destroy);
+    }
+    recordPersistenceFailure("load", err);
+    throw err;
+  }
+}
+
+async function commitDatabaseTransaction(client) {
+  try {
+    await client.query("COMMIT");
+    markWriteSuccess("postgres");
+  } catch (err) {
+    recordPersistenceFailure("write", err);
+    throw err;
+  }
+}
+
+async function rollbackDatabaseTransaction(client) {
+  try {
+    await client.query("ROLLBACK");
+    return true;
+  } catch (err) {
+    recordPersistenceFailure("write", err);
+    return false;
+  }
+}
+
+function isTransactionalMutation(method, path) {
+  return method === "POST" && ["/api/join", "/api/action", "/api/memory"].includes(path);
+}
+
+const persistenceFailed = () => persistMode === "unconfigured" || persistMode.endsWith("-error");
 // Mutations are written exactly once, synchronously, by the request handler.
 const dirty = () => {};
 
@@ -241,7 +472,45 @@ function joinCity(input){
 
 function send(res,status,body,type="application/json; charset=utf-8"){ const payload=typeof body==="string"?body:JSON.stringify(body); res.writeHead(status,{ "content-type":type, "cache-control":"no-store", "access-control-allow-origin":"*", "access-control-allow-headers":"Authorization, Content-Type", "access-control-allow-methods":"GET, POST, OPTIONS" }); res.end(payload); }
 function bearer(req){ return (/^Bearer\s+(\S+)/i.exec(req.headers.authorization||"")||[])[1]||null; }
-function readBody(req){ return new Promise((res,rej)=>{ const c=[]; req.on("data",x=>c.push(x)); req.on("end",()=>{ const raw=Buffer.concat(c).toString("utf8"); if(!raw) return res({}); try{res(JSON.parse(raw));}catch{rej(new Error("bad json"));} }); req.on("error",rej); }); }
+function requestBodyError(errorClass, message, status) {
+  const err = new Error(message);
+  err.error_class = errorClass;
+  err.http_status = status;
+  return err;
+}
+function containsNul(value) {
+  if (typeof value === "string") return value.includes("\u0000");
+  if (Array.isArray(value)) return value.some(containsNul);
+  if (value && typeof value === "object") return Object.values(value).some(containsNul);
+  return false;
+}
+function readBody(req){
+  return new Promise((res,rej)=>{
+    const chunks=[];
+    let bytes=0;
+    let tooLarge=false;
+    req.on("data",chunk=>{
+      bytes += chunk.length;
+      if (bytes > MAX_REQUEST_BYTES) {
+        tooLarge=true;
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end",()=>{
+      if (tooLarge) return rej(requestBodyError("payload_too_large", `JSON body exceeds ${MAX_REQUEST_BYTES} bytes.`, 413));
+      const raw=Buffer.concat(chunks).toString("utf8");
+      if(!raw) return res({});
+      let parsed;
+      try { parsed=JSON.parse(raw); }
+      catch { return rej(requestBodyError("bad_input", "Request body must be valid JSON.", 400)); }
+      if (containsNul(parsed)) return rej(requestBodyError("bad_input", "Text cannot contain the NUL character.", 400));
+      res(parsed);
+    });
+    req.on("aborted",()=>rej(requestBodyError("bad_input", "Request body was interrupted.", 400)));
+    req.on("error",rej);
+  });
+}
 function originOf(req){ if(process.env.PUBLIC_ORIGIN) return process.env.PUBLIC_ORIGIN.replace(/\/$/,""); const proto=req.headers["x-forwarded-proto"]||"http"; const host=req.headers["x-forwarded-host"]||req.headers.host||`127.0.0.1:${PORT}`; return `${proto}://${host}`; }
 function routePath(req) { const raw = req.url || "/"; return new URL(raw, "http://l").pathname.replace(/\/+$/, "") || "/"; }
 
@@ -259,7 +528,7 @@ function act(key, input){
   if(action==="give"){ const thing=world.things.find(t=>t.id===input.targetId); const to=String(input.toHandle??"").trim().toLowerCase(); if(!thing||!to) return fail("bad_input","give needs targetId (thing) and toHandle.",400); if(thing.ownerHandle!==row.handle) return fail("forbidden","You do not own that.",403); const dest=byH(to); if(!dest) return fail("bad_input","No such resident.",400); thing.ownerHandle=to; thing.placeId=dest.standingId; dirty(); return { ok:true, me:deed(row), event:emit("give",`${row.handle} gave ${thing.name} to ${to}.`,dest.standingId,row.handle) }; }
   if(action==="agree"){ const title=String(input.title??"").trim(), body=String(input.body??"").trim(); if(title.length<3||title.length>80) return fail("bad_input","Title must be 3–80 characters.",400); if(body.length<8||body.length>4000) return fail("bad_input","Pact body must be 8–4000 characters.",400); const lim=rate(row.handle,"agreements",Q.agreements_per_day); if(lim) return lim; world.agreements.push({ id:nid("a"), title, body, authorHandle:row.handle, signers:[row.handle], createdAt:now() }); dirty(); return { ok:true, me:deed(row), event:emit("agree",`${row.handle} opened a pact: ${title}.`,row.standingId,row.handle) }; }
   if(action==="sign"){ const a=world.agreements.find(x=>x.id===input.agreementId); if(!a) return fail("bad_input","No such pact.",400); if(a.signers.includes(row.handle)) return fail("conflict","You already signed.",409); a.signers.push(row.handle); dirty(); return { ok:true, me:deed(row), event:emit("sign",`${row.handle} signed “${a.title}”.`,row.standingId,row.handle) }; }
-  if(action==="remember"){ const summary=String(input.body??input.name??"").trim(); if(!summary||summary.length>4096) return fail("bad_input","Memory summary must be 1–4096 characters.",400); world.memories.push({ id:nid("mem"), agentHandle:row.handle, memoryType:input.memoryType||"episodic", epistemic:input.epistemic||"observed", summary, visibility:"agent_private", createdAt:now() }); dirty(); return { ok:true, me:deed(row), perception:perceive(row,row.standingId) }; }
+  if(action==="remember"){ const summary=String(input.body??input.name??"").trim(); if(!summary||summary.length>4096) return fail("bad_input","Memory summary must be 1–4096 characters.",400); const memory={ id:nid("mem"), agentHandle:row.handle, memoryType:input.memoryType||"episodic", epistemic:input.epistemic||"observed", summary, visibility:"agent_private", createdAt:now() }; world.memories.push(memory); dirty(); return { ok:true, me:deed(row), memory:{ id:memory.id }, perception:perceive(row,row.standingId) }; }
   if(action==="permit"){ const perm=String(input.name??"").trim(), mode=String(input.body??"").trim(); if(!PK.includes(perm)) return fail("bad_input",`Unknown door. Use: ${PK.join(", ")}`,400); if(!PM.includes(mode)) return fail("bad_input","Mode must be public, owner_only, or closed.",400); const here=place(row.standingId); if(!here) return fail("not_found","No such place.",404); if(!here.ownerHandle) return fail("forbidden","World Root and Arrival Commons stay open. Nobody owns them.",403); if(here.ownerHandle!==row.handle) return fail("forbidden","Only the owner sets doors here.",403); here.permissions={...here.permissions,[perm]:mode}; here.revision++; dirty(); return { ok:true, me:deed(row), event:emit("permit",`${row.handle} set ${perm} to ${mode} in ${here.name}.`,here.id,row.handle) }; }
   if(action==="law"){ const body=String(input.body??"").trim(); if(body.length<2||body.length>400) return fail("bad_input","A local law is 2–400 characters.",400); const here=place(row.standingId); if(!here?.ownerHandle) return fail("forbidden","The unowned commons do not take laws.",403); if(here.ownerHandle!==row.handle) return fail("forbidden","Only the owner writes law here.",403); here.laws=[...here.laws,body]; here.revision++; dirty(); return { ok:true, me:deed(row), event:emit("law",`${row.handle} wrote a local law in ${here.name}.`,here.id,row.handle) }; }
   if(action==="use"){ if(!input.targetId) return fail("bad_input","use needs targetId (thing).",400); const here=place(row.standingId); if(!here) return fail("not_found","No such place.",404); if(!may(here,"use_thing",row.handle)) return fail("forbidden","This place does not allow using things.",403); const t=world.things.find(x=>x.id===input.targetId); if(!t||t.placeId!==row.standingId) return fail("not_found","No such thing here.",404); return { ok:true, me:deed(row), event:emit("use",`${row.handle} used ${t.name}.`,row.standingId,row.handle), used:t }; }
@@ -280,6 +549,7 @@ function healthPayload(ok = !persistError && persistMode !== "unconfigured") {
     constitution_version: V,
     join: "/api/join",
     persist: persistMode,
+    database_url: hasDatabase(),
     blob_store: hasBlobStore(),
     blob_token: hasBlobToken(),
     host: process.env.VERCEL ? "vercel" : "node",
@@ -288,8 +558,34 @@ function healthPayload(ok = !persistError && persistMode !== "unconfigured") {
   return payload;
 }
 
+async function reconcilePostgresCommit(out, expectedWorld) {
+  let lastError = null;
+  for (const waitMs of [0, 50, 250, 1000]) {
+    if (waitMs) await delay(waitMs);
+    try {
+      const current = await loadPostgres(getDatabasePool());
+      if (worldDigest(current) === worldDigest(expectedWorld)) return true;
+      if (out.key && out.handle) {
+        const resident = current.residents.find((row) => row.handle === out.handle);
+        if (resident?.keyHash && keysMatch(out.key, resident.keyHash)) return true;
+      }
+      if (out.event?.id && current.events.some((event) => event.id === out.event.id)) return true;
+      if (out.memory?.id && current.memories.some((memory) => memory.id === out.memory.id)) return true;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (lastError) recordPersistenceFailure("load", lastError);
+  return false;
+}
+
 async function serve(req, res) {
   const path = routePath(req);
+  let databaseClient = null;
+  let transactionOpen = false;
+  let destroyDatabaseClient = false;
+  let requestInput = {};
+  let bodyFailure = null;
   try {
     if (req.method === "OPTIONS") {
       res.setHeader("access-control-allow-origin", "*");
@@ -299,14 +595,67 @@ async function serve(req, res) {
       return res.end();
     }
 
+    const transactionalMutation = isTransactionalMutation(req.method, path);
+    if (transactionalMutation) {
+      try { requestInput = await readBody(req); }
+      catch (err) { bodyFailure = err; }
+    }
+
     try {
-      world = await loadLedger();
+      await migrateFromBlobIfEnabled();
+      if (hasDatabase() && transactionalMutation && !bodyFailure) {
+        databaseClient = await openDatabaseTransaction();
+        transactionOpen = true;
+      }
+      world = await loadLedger({ client: databaseClient, forUpdate: transactionOpen });
     } catch {
+      if (transactionOpen) {
+        const rolledBack = await rollbackDatabaseTransaction(databaseClient);
+        destroyDatabaseClient ||= !rolledBack;
+        transactionOpen = false;
+      }
       if (req.method === "GET" && (path === "/" || path === "/health" || path === "/api")) {
         return send(res, 503, healthPayload(false));
       }
       return send(res, 503, fail("ledger_unavailable", "Hearth could not load its durable ledger. No action was applied.", 503));
     }
+
+    if (bodyFailure) {
+      return send(res, bodyFailure.http_status || 400, fail(
+        bodyFailure.error_class || "bad_input",
+        shortError(bodyFailure),
+        bodyFailure.http_status || 400,
+      ));
+    }
+
+    const finishMutation = async (out, successStatus) => {
+      if (out.ok) {
+        await saveLedger(world, { client: databaseClient });
+        if (transactionOpen) {
+          try {
+            await commitDatabaseTransaction(databaseClient);
+            transactionOpen = false;
+          } catch (err) {
+            // COMMIT errors have an unknown server-side outcome. Never return this
+            // client to the pool; reconcile from a fresh connection when possible.
+            transactionOpen = false;
+            destroyDatabaseClient = true;
+            if (await reconcilePostgresCommit(out, world)) {
+              markWriteSuccess("postgres");
+            } else {
+              err.commitOutcomeUnknown = true;
+              throw err;
+            }
+          }
+        }
+      } else if (transactionOpen) {
+        const rolledBack = await rollbackDatabaseTransaction(databaseClient);
+        transactionOpen = false;
+        destroyDatabaseClient ||= !rolledBack;
+        if (!rolledBack) throw new Error("Postgres transaction rollback failed");
+      }
+      return send(res, out.ok ? successStatus : out.http_status, out);
+    };
 
     if (req.method === "GET" && (path === "/" || path === "/health" || path === "/api")) {
       const health = healthPayload();
@@ -319,9 +668,8 @@ async function serve(req, res) {
     if (req.method === "GET" && path === "/api/map") return send(res, 200, snap());
     if (req.method === "GET" && path === "/api/events") return send(res, 200, world.events);
     if (req.method === "POST" && path === "/api/join") {
-      const out = joinCity(await readBody(req));
-      if (out.ok) await saveLedger(world);
-      return send(res, out.ok ? 201 : out.http_status, out);
+      const out = joinCity(requestInput);
+      return await finishMutation(out, 201);
     }
     if (req.method === "GET" && path === "/api/me") {
       const key = bearer(req);
@@ -332,31 +680,49 @@ async function serve(req, res) {
     }
     if (path === "/api/memory") {
       const key = bearer(req);
-      if (!key) return send(res, 401, fail("auth_required", "Bearer key required.", 401));
       if (req.method === "GET") {
+        if (!key) return send(res, 401, fail("auth_required", "Bearer key required.", 401));
         const out = listMem(key);
         return send(res, out.ok === false ? out.http_status : 200, out);
       }
       if (req.method === "POST") {
-        const out = writeMem(key, await readBody(req));
-        if (out.ok) await saveLedger(world);
-        return send(res, out.ok ? 200 : out.http_status, out);
+        const out = key
+          ? writeMem(key, requestInput)
+          : fail("auth_required", "Bearer key required.", 401);
+        return await finishMutation(out, 200);
       }
     }
     if (req.method === "POST" && path === "/api/action") {
-      const out = act(bearer(req), await readBody(req).catch(() => ({})));
+      const out = act(bearer(req), requestInput);
       // Even no_op commits the ledger it read, while remaining absent from public history.
-      if (out.ok) await saveLedger(world);
-      return send(res, out.ok ? 200 : out.http_status, out);
+      return await finishMutation(out, 200);
     }
     return send(res, 404, fail("not_found", "No such door.", 404));
   } catch (err) {
-    if (persistMode === "blob-error" || persistMode === "file-error") {
+    if (transactionOpen) {
+      const rolledBack = await rollbackDatabaseTransaction(databaseClient);
+      destroyDatabaseClient ||= !rolledBack;
+      transactionOpen = false;
+    }
+    if (err?.commitOutcomeUnknown) {
+      return send(res, 503, fail(
+        "commit_outcome_unknown",
+        "The database connection ended during commit. The action may have been applied; inspect current state before retrying.",
+        503,
+      ));
+    }
+    if (persistenceFailed()) {
       return send(res, 503, fail("ledger_unavailable", "Hearth could not commit the durable ledger. No success was returned.", 503));
     }
     return send(res, 500, fail("city_fault", shortError(err), 500));
   } finally {
     world = null;
+    if (transactionOpen && databaseClient) {
+      const rolledBack = await rollbackDatabaseTransaction(databaseClient);
+      destroyDatabaseClient ||= !rolledBack;
+      transactionOpen = false;
+    }
+    if (databaseClient) databaseClient.release(destroyDatabaseClient);
   }
 }
 

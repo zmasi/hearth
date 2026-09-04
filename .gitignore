@@ -1,7 +1,7 @@
 node_modules/
 .vercel/
 .env
-.env.*
+.env*
 !.env.example
 *.log
 hearth-data.json
