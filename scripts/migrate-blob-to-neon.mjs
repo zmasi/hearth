@@ -22,9 +22,14 @@ function requireEnv(name) {
 
 function verifiedPostgresUrl(value) {
   const url = new URL(value);
-  if (["prefer", "require", "verify-ca"].includes(url.searchParams.get("sslmode"))) {
+  const mode = url.searchParams.get("sslmode");
+  if (!mode || ["disable", "allow"].includes(mode)) {
+    throw new Error("Postgres connection must require verified TLS");
+  }
+  if (["prefer", "require", "verify-ca"].includes(mode)) {
     url.searchParams.set("sslmode", "verify-full");
   }
+  if (url.searchParams.get("sslmode") !== "verify-full") throw new Error("Unsupported Postgres SSL mode");
   return url.toString();
 }
 
@@ -87,6 +92,8 @@ let action = "verified";
 try {
   await client.connect();
   await client.query(apply ? "BEGIN" : "BEGIN READ ONLY");
+  await client.query("SET LOCAL statement_timeout = '30000ms'");
+  await client.query("SET LOCAL lock_timeout = '10000ms'");
   if (apply) await client.query(schemaSql);
 
   let result = await client.query(

@@ -40,21 +40,7 @@ const nid = (p) => `${p}_${randomBytes(5).toString("hex")}`;
 const fail = (error_class,message,http_status) => ({ ok:false, error_class, message, http_status });
 
 const BLOB_PATH = "hearth.json";
-const MIGRATION_FLAG = "HEARTH_MIGRATE_FROM_BLOB";
-const MIGRATION_LOCK_ID = "310420260903";
-const MIGRATION_QUIET_MS = Math.max(0, Number(process.env.HEARTH_MIGRATION_QUIET_MS ?? 5000));
 const MAX_REQUEST_BYTES = 128 * 1024;
-const HEARTH_LEDGER_SCHEMA = `CREATE TABLE IF NOT EXISTS hearth_ledger (
-  id smallint PRIMARY KEY CHECK (id = 1),
-  world jsonb NOT NULL CHECK (jsonb_typeof(world) = 'object'),
-  constitution_version text NOT NULL,
-  revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
-  migrated_from text NOT NULL,
-  migrated_sha256 text NOT NULL CHECK (migrated_sha256 ~ '^[0-9a-f]{64}$'),
-  migrated_blob_etag text,
-  migrated_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-)`;
 const hasDatabase = () => Boolean(process.env.DATABASE_URL);
 const hasBlob = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID);
 const hasBlobToken = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN);
@@ -67,7 +53,6 @@ let persistErrorKind = null;
 let blobClientOverride = null;
 let databasePoolOverride = null;
 let databasePoolInstance = null;
-let migrationBootstrapPromise = null;
 let requestTail = Promise.resolve();
 
 export function __setBlobClientForTests(client) {
@@ -116,9 +101,14 @@ function blobOptions(extra) {
 }
 function verifiedPostgresUrl(value) {
   const url = new URL(value);
-  if (["prefer", "require", "verify-ca"].includes(url.searchParams.get("sslmode"))) {
+  const mode = url.searchParams.get("sslmode");
+  if (!mode || ["disable", "allow"].includes(mode)) {
+    throw new Error("Postgres connection must require verified TLS");
+  }
+  if (["prefer", "require", "verify-ca"].includes(mode)) {
     url.searchParams.set("sslmode", "verify-full");
   }
+  if (url.searchParams.get("sslmode") !== "verify-full") throw new Error("Unsupported Postgres SSL mode");
   return url.toString();
 }
 async function blobClient() {
@@ -146,36 +136,6 @@ async function loadBlob() {
   return w;
 }
 
-async function readMigrationBlobSnapshot(ifNoneMatch = undefined) {
-  const blob = await blobClient();
-  if (typeof blob.get !== "function") throw new Error("@vercel/blob get() is unavailable");
-  const got = await blob.get(BLOB_PATH, blobOptions({
-    access: "private",
-    useCache: false,
-    ...(ifNoneMatch ? { ifNoneMatch } : {}),
-  }));
-  if (got?.statusCode === 304) return { unchanged: true, etag: got.blob?.etag || ifNoneMatch };
-  if (!got?.stream) throw new Error("Blob migration source hearth.json is missing");
-  const source = JSON.parse(await new Response(got.stream).text());
-  if (!source || source.version !== V) {
-    throw new Error(`Unsupported Blob ledger version: ${source?.version || "missing"}`);
-  }
-  if (containsNul(source)) throw new Error("Blob ledger contains a NUL character that PostgreSQL jsonb cannot preserve");
-  const etag = got.blob?.etag;
-  if (!etag) throw new Error("Blob migration source did not include an ETag");
-  return { unchanged: false, etag, world: source };
-}
-
-async function loadStableMigrationSource() {
-  let snapshot = await readMigrationBlobSnapshot();
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await delay(MIGRATION_QUIET_MS);
-    const checked = await readMigrationBlobSnapshot(snapshot.etag);
-    if (checked.unchanged) return snapshot;
-    snapshot = checked;
-  }
-  throw new Error("Blob ledger did not remain unchanged for the migration quiet window");
-}
 async function saveBlob(w) {
   const blob = await blobClient();
   if (typeof blob.put !== "function") throw new Error("@vercel/blob put() is unavailable");
@@ -207,56 +167,6 @@ function canonicalJson(value) {
 
 function worldDigest(value) {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
-}
-
-async function bootstrapPostgresFromBlob() {
-  const client = await getDatabasePool().connect();
-  let transactionOpen = false;
-  try {
-    await client.query("BEGIN");
-    transactionOpen = true;
-    await client.query("SET LOCAL statement_timeout = '30000ms'");
-    await client.query("SET LOCAL lock_timeout = '10000ms'");
-    await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [MIGRATION_LOCK_ID]);
-    await client.query(HEARTH_LEDGER_SCHEMA);
-    const existing = await client.query("SELECT world FROM hearth_ledger WHERE id = $1 FOR UPDATE", [1]);
-    if (existing.rows.length === 0) {
-      const snapshot = await loadStableMigrationSource();
-      const source = snapshot.world;
-      await client.query(
-        `INSERT INTO hearth_ledger
-          (id, world, constitution_version, revision, migrated_from, migrated_sha256, migrated_blob_etag)
-         VALUES ($1, $2::jsonb, $3, 1, $4, $5, $6)`,
-        [1, JSON.stringify(source), V, `vercel-blob:${BLOB_PATH}`, worldDigest(source), snapshot.etag],
-      );
-    } else {
-      const current = existing.rows[0].world;
-      if (!current || current.version !== V) {
-        throw new Error(`Unsupported Postgres ledger version: ${current?.version || "missing"}`);
-      }
-    }
-    await client.query("COMMIT");
-    transactionOpen = false;
-  } catch (err) {
-    if (transactionOpen) {
-      try { await client.query("ROLLBACK"); } catch {}
-    }
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
-async function migrateFromBlobIfEnabled() {
-  if (!hasDatabase() || process.env[MIGRATION_FLAG] !== "1") return;
-  if (!migrationBootstrapPromise) {
-    migrationBootstrapPromise = bootstrapPostgresFromBlob().catch((err) => {
-      migrationBootstrapPromise = null;
-      recordPersistenceFailure("load", err);
-      throw err;
-    });
-  }
-  await migrationBootstrapPromise;
 }
 
 async function loadPostgres(queryable, forUpdate = false) {
@@ -602,7 +512,6 @@ async function serve(req, res) {
     }
 
     try {
-      await migrateFromBlobIfEnabled();
       if (hasDatabase() && transactionalMutation && !bodyFailure) {
         databaseClient = await openDatabaseTransaction();
         transactionOpen = true;

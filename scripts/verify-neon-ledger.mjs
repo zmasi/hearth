@@ -6,9 +6,13 @@ const { Pool } = pg;
 const configuredConnectionString = process.env.DATABASE_URL_UNPOOLED || process.env.POSTGRES_URL_NON_POOLING;
 assert.ok(configuredConnectionString, "DATABASE_URL_UNPOOLED (or POSTGRES_URL_NON_POOLING) is required");
 const connectionUrl = new URL(configuredConnectionString);
-if (["prefer", "require", "verify-ca"].includes(connectionUrl.searchParams.get("sslmode"))) {
+assert.equal(connectionUrl.hostname.includes("-pooler."), false, "ledger verification requires a direct Neon endpoint");
+const sslmode = connectionUrl.searchParams.get("sslmode");
+assert.ok(sslmode && !["disable", "allow"].includes(sslmode), "Postgres connection must require verified TLS");
+if (["prefer", "require", "verify-ca"].includes(sslmode)) {
   connectionUrl.searchParams.set("sslmode", "verify-full");
 }
+assert.equal(connectionUrl.searchParams.get("sslmode"), "verify-full", "unsupported Postgres SSL mode");
 const connectionString = connectionUrl.toString();
 
 function canonical(value) {
@@ -41,11 +45,16 @@ try {
   const row = result.rows[0];
   const world = row.world;
   const actualDigest = digest(world);
+  const revision = BigInt(row.revision);
   assert.equal(world.version, "3.1", "unexpected world version");
   assert.equal(row.constitution_version, world.version, "row/world constitution versions differ");
   assert.equal(row.migrated_from, "vercel-blob:hearth.json", "unexpected migration source");
-  assert.equal(row.migrated_sha256, actualDigest, "Neon JSON no longer matches its recorded Blob migration digest");
+  assert.match(row.migrated_sha256, /^[0-9a-f]{64}$/, "invalid migration source digest");
   assert.ok(row.migrated_blob_etag, "migration Blob ETag is missing");
+  const sourceDigestMatches = row.migrated_sha256 === actualDigest;
+  if (revision === 1n) {
+    assert.equal(sourceDigestMatches, true, "revision 1 must match the imported Blob snapshot");
+  }
 
   const keyHashCount = world.residents.filter((resident) => Boolean(resident.keyHash)).length;
   const counts = {
@@ -65,8 +74,9 @@ try {
     revision: row.revision,
     source: row.migrated_from,
     source_etag_recorded: true,
-    source_digest_matches: true,
-    digest: actualDigest,
+    source_digest_matches: sourceDigestMatches,
+    content_changed_since_migration: !sourceDigestMatches,
+    current_digest: actualDigest,
     counts,
     migrated_at: row.migrated_at.toISOString(),
     updated_at: row.updated_at.toISOString(),
