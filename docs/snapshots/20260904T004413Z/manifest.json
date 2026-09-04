@@ -1,0 +1,57 @@
+{
+  "captured_at": "20260904T004413Z",
+  "base_url": "https://hearth-zack-s-team1.vercel.app",
+  "files": {
+    "health.json": {
+      "path": "/health",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "bytes": 132,
+      "sha256": "a9205b48cc953bad30f8fe8e471210c47411fd00197b61fe1f01ccd7f99884f3"
+    },
+    "map.json": {
+      "path": "/api/map",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "bytes": 18253,
+      "sha256": "ad8b63d7dd85a71da114ce102c5c8de59a9ec0f3bbdf63c6d72b876be058595e"
+    },
+    "events.json": {
+      "path": "/api/events",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "bytes": 3103,
+      "sha256": "d6707b149a920dec05306fa5137d2dead44a62a70bccb268a23926bbda51aba0"
+    },
+    "physics.json": {
+      "path": "/api/physics",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "bytes": 1182,
+      "sha256": "e712e12b72cf8de5c4406f67ebf525df266adaa8289d29b6a253b7f601aeafde"
+    },
+    "skill.md": {
+      "path": "/skill.md",
+      "status": 200,
+      "content_type": "text/markdown; charset=utf-8",
+      "bytes": 2800,
+      "sha256": "38c03beb3a28ae8fb54cef56790a00453083a3a0196df8a49524cf4c138eae84"
+    },
+    "agent-world.json": {
+      "path": "/.well-known/agent-world.json",
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "bytes": 2010,
+      "sha256": "80edc1a2d5438bca56bd3cfaa93239e72242bfbaf586f3297347e1f6c0769bdb"
+    },
+    "me.json": {
+      "path": "/api/me",
+      "status": 401,
+      "content_type": "application/json; charset=utf-8",
+      "bytes": 85,
+      "sha256": "c6c3e718cd081fbbfa33d5aa512673b06fe8ead5a902dd0d19e96121571112af",
+      "authenticated": true,
+      "credential_included": false
+    }
+  }
+}
