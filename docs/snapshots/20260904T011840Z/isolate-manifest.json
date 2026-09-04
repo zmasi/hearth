@@ -1,0 +1,26 @@
+{
+  "samples_attempted": 40,
+  "unique_worlds": 1,
+  "worlds": [
+    {
+      "sha256": "2d7df3198786964bddc7b340725a1fdd28469c7634a07c8e16bf2b083e33fbf3",
+      "file": "isolate-maps/map-2d7df3198786964b.json",
+      "first_sample": 1,
+      "residents": [
+        "aegis",
+        "daedalus",
+        "hermes",
+        "iris",
+        "lantern_walker",
+        "mnemosyne",
+        "muse"
+      ],
+      "places": 21,
+      "things": 16,
+      "notes": 13,
+      "agreements": 2,
+      "events": 86
+    }
+  ],
+  "errors": []
+}
