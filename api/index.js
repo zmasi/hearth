@@ -141,10 +141,16 @@ async function loadLedger() {
     return loaded;
   } catch (err) {
     const unconfigured = !hasBlob() && Boolean(process.env.VERCEL);
+    const failureKind = unconfigured ? "config" : operation;
+    const failureMessage = shortError(err);
     persistMode = unconfigured ? "unconfigured" : (hasBlob() ? "blob-error" : "file-error");
-    persistErrorKind = unconfigured ? "config" : operation;
-    persistError = shortError(err);
-    console.error(`${hasBlob() ? "blob" : "file"} ${operation} failed`, persistError);
+    // A read outcome cannot prove that a previously failed mutation was committed.
+    // Retain that write failure until markWriteSuccess() observes a durable write.
+    if (persistErrorKind !== "write" || failureKind === "write") {
+      persistErrorKind = failureKind;
+      persistError = failureMessage;
+    }
+    console.error(`${hasBlob() ? "blob" : "file"} ${operation} failed`, failureMessage);
     throw err;
   }
 }

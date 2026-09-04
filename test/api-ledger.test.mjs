@@ -4,6 +4,16 @@ import test from "node:test";
 
 import handler, { __setBlobClientForTests } from "../api/index.js";
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 class MemoryBlob {
   constructor({ getError = null, putError = null } = {}) {
     this.body = null;
@@ -11,6 +21,13 @@ class MemoryBlob {
     this.putError = putError;
     this.gets = [];
     this.puts = [];
+    this.nextPutGate = null;
+  }
+
+  deferNextPut() {
+    const gate = { entered: deferred(), release: deferred() };
+    this.nextPutGate = gate;
+    return gate;
   }
 
   async get(path, options) {
@@ -22,10 +39,29 @@ class MemoryBlob {
 
   async put(path, body, options) {
     this.puts.push({ path, body, options: { ...options } });
+    const gate = this.nextPutGate;
+    this.nextPutGate = null;
+    if (gate) {
+      gate.entered.resolve();
+      await gate.release.promise;
+    }
     if (this.putError) throw this.putError;
     this.body = body;
     return { pathname: path };
   }
+}
+
+async function assertPendingUntilPutResolves(request, gate) {
+  let settled = false;
+  request.then(
+    () => { settled = true; },
+    () => { settled = true; },
+  );
+  await gate.entered.promise;
+  await Promise.resolve();
+  assert.equal(settled, false, "request returned before the durable put resolved");
+  gate.release.resolve();
+  return request;
 }
 
 function invoke(method, url, body = undefined, headers = {}) {
@@ -150,12 +186,17 @@ test("the existing door, auth, human-block, and go_home contracts remain intact"
   configure(store);
 
   const publicDoors = [
+    ["/", "application/json"],
     ["/health", "application/json"],
+    ["/api", "application/json"],
     ["/api/map", "application/json"],
     ["/api/events", "application/json"],
     ["/api/physics", "application/json"],
     ["/skill.md", "text/markdown"],
+    ["/api/skill", "text/markdown"],
     ["/.well-known/agent-world.json", "application/json"],
+    ["/api/well-known", "application/json"],
+    ["/llms.txt", "text/plain"],
   ];
   for (const [path, contentType] of publicDoors) {
     const response = await invoke("GET", path);
@@ -204,6 +245,22 @@ test("Vercel refuses to serve an unconfigured ephemeral file ledger", { concurre
   assert.match(health.json.persist_error, /No Blob store or read-write token/);
   assert.equal(store.gets.length, 0);
   assert.equal(store.puts.length, 0);
+});
+
+test("OPTIONS skips the ledger while every other request, including 404, reloads it", { concurrency: false }, async () => {
+  const store = new MemoryBlob();
+  configure(store);
+
+  assert.equal((await invoke("GET", "/health")).status, 200);
+  const readsBeforeOptions = store.gets.length;
+
+  const options = await invoke("OPTIONS", "/api/action");
+  assert.equal(options.status, 204);
+  assert.equal(store.gets.length, readsBeforeOptions);
+
+  const missing = await invoke("GET", "/not-a-door");
+  assert.equal(missing.status, 404);
+  assert.equal(store.gets.length, readsBeforeOptions + 1);
 });
 
 test("a Blob write failure is reported as blob-error, never blob-empty", { concurrency: false }, async () => {
@@ -257,4 +314,60 @@ test("a Blob read failure refuses actions instead of forking a seed world", { co
   assert.equal(health.status, 503);
   assert.equal(health.json.persist, "blob-error");
   assert.equal(health.json.persist_error, "synthetic read outage");
+});
+
+test("a retained write error survives a later read failure and read recovery", { concurrency: false }, async () => {
+  const store = new MemoryBlob();
+  configure(store);
+
+  assert.equal((await invoke("GET", "/health")).status, 200);
+  store.putError = new Error("original durable write outage");
+
+  const failedJoin = await invoke("POST", "/api/join", { handle: "retained_write_probe", kind: "agent" });
+  assert.equal(failedJoin.status, 503);
+
+  store.putError = null;
+  store.getError = new Error("later transient read outage");
+  const failedRead = await invoke("GET", "/health");
+  assert.equal(failedRead.status, 503);
+
+  store.getError = null;
+  const recoveredRead = await invoke("GET", "/health");
+  assert.equal(recoveredRead.status, 503);
+  assert.equal(recoveredRead.json.persist, "blob-error");
+  assert.equal(recoveredRead.json.persist_error, "original durable write outage");
+
+  const successfulWrite = await invoke("POST", "/api/join", { handle: "retained_write_probe", kind: "agent" });
+  assert.equal(successfulWrite.status, 201);
+  const recoveredHealth = await invoke("GET", "/health");
+  assert.equal(recoveredHealth.status, 200);
+  assert.equal(recoveredHealth.json.persist, "blob");
+  assert.equal(Object.hasOwn(recoveredHealth.json, "persist_error"), false);
+});
+
+test("join, action, and private-memory responses await their durable write", { concurrency: false }, async () => {
+  const store = new MemoryBlob();
+  configure(store);
+  assert.equal((await invoke("GET", "/health")).status, 200);
+
+  const joinGate = store.deferNextPut();
+  const joinRequest = invoke("POST", "/api/join", { handle: "awaited_write_probe", kind: "agent" });
+  const joined = await assertPendingUntilPutResolves(joinRequest, joinGate);
+  assert.equal(joined.status, 201);
+  const auth = { authorization: `Bearer ${joined.json.key}` };
+
+  const actionGate = store.deferNextPut();
+  const actionRequest = invoke("POST", "/api/action", { action: "say", body: "awaited action write" }, auth);
+  const action = await assertPendingUntilPutResolves(actionRequest, actionGate);
+  assert.equal(action.status, 200);
+
+  const memoryGate = store.deferNextPut();
+  const memoryRequest = invoke("POST", "/api/memory", { summary: "awaited private memory write" }, auth);
+  const memory = await assertPendingUntilPutResolves(memoryRequest, memoryGate);
+  assert.equal(memory.status, 200);
+
+  const memories = await invoke("GET", "/api/memory", undefined, auth);
+  assert.equal(memories.status, 200);
+  assert.equal(memories.json.length, 1);
+  assert.equal(memories.json[0].summary, "awaited private memory write");
 });
