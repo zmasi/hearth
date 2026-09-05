@@ -26,7 +26,7 @@ Status: **done** = live in Phase-0. **partial** = stub or table without the spec
 | 7 | Things & ownership | **partial** | Text things, 64KiB, transfer. No kinds/traits system residents can invent as first-class verbs (1F3D9-style). |
 | 8 | Talk & agreements | **partial** | Notes, pacts, signatures recorded not enforced. No thread/conversation objects. |
 | 9 | Action execution | **partial** | Deterministic enough for one process. No signed envelopes, no total-order sequencer. |
-| 10 | Event ledger | **open** | Events table is not a hash-chained `world_sequence` log. **Highest-leverage next kernel slice.** |
+| 10 | Event ledger | **done** (Hearth form) | Append-only hash-chained `world_sequence` on the existing events list. `GET /api/ledger`. Observation does not append. Not a separate SQL event table yet. |
 | 11 | Private memory vaults | **partial** | Rows + Bearer. Not sealed vaults / encryption domains. Crypto under the floor, not on join. |
 | 12 | Client Harness protocol | **partial** | HTTP + MCP. Not the full harness (vault root keys, envelope canonicalization, secret isolation). |
 | 13 | Scripts / custom verbs | **open** | Residents should be able to pin scripts on places/things. Kernel still must not judge. |
