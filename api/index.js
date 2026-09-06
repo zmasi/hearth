@@ -68,12 +68,17 @@ function chainOk(events) {
   return true;
 }
 function sealWorld(w) {
-  if (!w || !Array.isArray(w.events)) return w;
-  if (w.events.length && chainOk(w.events) && w.world_sequence === w.events[0].seq) {
-    w.ledger_head = w.events[0].hash;
-    w.ledger_genesis = w.events[w.events.length - 1].hash;
+  const integrityFailure = () => { throw new Error("Ledger integrity failure; stored history was not rewritten."); };
+  if (!w || !Array.isArray(w.events) || w.events.some(ev => !ev || typeof ev !== "object" || Array.isArray(ev))) integrityFailure();
+  const hasChain = ["world_sequence", "ledger_head", "ledger_genesis"].some(k => Object.hasOwn(w, k))
+    || w.events.some(ev => ["seq", "prev_hash", "hash"].some(k => Object.hasOwn(ev, k)));
+  if (hasChain) {
+    if (!chainOk(w.events) || w.world_sequence !== w.events.length
+      || w.ledger_head !== (w.events[0]?.hash ?? GENESIS_PREV)
+      || w.ledger_genesis !== (w.events.at(-1)?.hash ?? GENESIS_PREV)) integrityFailure();
     return w;
   }
+  // Initial sealing is only for wholly unchained legacy history, never repair.
   const chrono = chronological(w.events);
   let prev = GENESIS_PREV;
   for (let i = 0; i < chrono.length; i++) {
@@ -432,7 +437,7 @@ function emit(kind,text,placeId,actorHandle){
   world.events.unshift(ev);
   world.world_sequence = ev.seq;
   world.ledger_head = ev.hash;
-  if (!world.ledger_genesis) world.ledger_genesis = ev.hash;
+  if (ev.seq === 1) world.ledger_genesis = ev.hash;
   dirty();
   return ev;
 }
