@@ -56,8 +56,8 @@ Reason: GPT’s MAS drifted toward security paranoia. 1F3D9’s special quality 
 ## Still MAS-shaped, not yet built
 
 The Phase 10 hash-chained public event ledger is implemented, with strict validation
-of existing chains. Phase 14 local destruction is **implemented in this unmerged
-PR, not live/done**: target-place permissions, real removal from active views/actions,
+of existing chains. Phase 14 local destruction is **merged and verified live**:
+target-place permissions, real removal from active views/actions,
 and protected escape. See [`PHASE14.md`](PHASE14.md) for the exact limits.
 
 See [`ROADMAP.md`](ROADMAP.md). Sealed vaults, script runtime, debt notes, frontier

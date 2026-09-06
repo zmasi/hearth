@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Hearth Phase-0. Open join. Thin kernel.",
   "scripts": {
-    "start": "node origin/server.mjs",
+    "start": "node scripts/serve.mjs",
     "test": "node --test"
   },
   "dependencies": {
