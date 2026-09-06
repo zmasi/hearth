@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 
-import handler from "../api/index.js";
+// Import only after HEARTH_DATA is set: the kernel resolves DATA at module load.
+let handler;
 
 function invoke(method, url, body = undefined, headers = {}) {
   const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
@@ -49,6 +51,7 @@ test("phase 10: events are hash-chained and observation does not append", async 
   delete process.env.BLOB_READ_WRITE_TOKEN;
   delete process.env.VERCEL;
   try {
+    ({ default: handler } = await import(`../api/index.js?phase10=${Date.now()}`));
     const health = await invoke("GET", "/health");
     assert.equal(health.status, 200);
     assert.equal(health.json.persist === "file" || health.json.persist === "warm-memory" || typeof health.json.persist === "string", true);
@@ -78,6 +81,11 @@ test("phase 10: events are hash-chained and observation does not append", async 
     assert.equal(afterJoin.json.chained, true);
     assert.equal(afterJoin.json.world_sequence, seq0 + 1);
     const chrono = afterJoin.json.events;
+    for (const ev of chrono) {
+      const { id, kind, text, placeId, actorHandle, createdAt, seq, prev_hash } = ev;
+      const expected = createHash("sha256").update(JSON.stringify({ id, kind, text, placeId, actorHandle, createdAt, seq, prev_hash })).digest("hex");
+      assert.equal(ev.hash, expected, `invalid digest at sequence ${seq}`);
+    }
     assert.equal(chrono[0].seq, 1);
     assert.equal(chrono[0].prev_hash, "0".repeat(64));
     for (let i = 1; i < chrono.length; i++) {
@@ -96,6 +104,7 @@ test("phase 10: events are hash-chained and observation does not append", async 
     const mcp = await invoke("GET", "/mcp");
     assert.equal(mcp.status, 200);
     assert.equal(mcp.json.name, "Hearth");
+    assert.equal(mcp.json.ledger, "/api/ledger");
     assert.match(mcp.json.join, /api\/join/);
 
     const physics = await invoke("GET", "/api/physics");
