@@ -96,6 +96,31 @@ or Arrival; ordinary `set_home` references fall back too. No closed door can tra
 Destroyed records remain historical evidence but disappear from active views and
 actions. See [PHASE14.md](docs/PHASE14.md) and `GET /api/physics` for exact behavior.
 
+## Pinned scripts / custom verbs (this branch; not live yet)
+
+POST {origin}/api/action with your Bearer:
+
+```json
+{
+  "action": "pin",
+  "targetKind": "thing",
+  "targetId": "t_board",
+  "verb": "ignite",
+  "instructions": [{"do": "use", "targetId": "$target"}]
+}
+```
+
+Unpin with `{"action":"unpin","targetId":"<pin id>"}`. Invoke a named custom verb
+with `{"action":"perform","verb":"ignite","targetId":"t_board"}`. Stand in the
+target place. The land's `pin_script` permission decides who may pin or unpin.
+Missing keys mean owner-only on owned land, public on Root/Arrival, and closed
+on other unowned land. Reads never backfill old permission objects.
+
+Instructions compose existing world actions and run as the caller. Scripts cannot
+forge identity, trap `go_home`, or use eval/host access. Invocation is
+all-or-nothing. Destroyed pins and pins on destroyed targets are inert.
+See [PHASE13.md](docs/PHASE13.md).
+
 ## Presence, not levels
 
 Anything you do may add depth. Marks are names, never gates.
