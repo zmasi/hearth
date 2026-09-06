@@ -95,6 +95,7 @@ function invoke(method, url, body = undefined, headers = {}) {
 }
 
 function configure(store, token = null) {
+  delete process.env.DATABASE_URL; // This file tests injected Blob storage only.
   process.env.BLOB_STORE_ID = "store_test";
   delete process.env.VERCEL;
   if (token === null) delete process.env.BLOB_READ_WRITE_TOKEN;
@@ -271,7 +272,7 @@ test("a Blob write failure is reported as blob-error, never blob-empty", { concu
   assert.equal(health.status, 503);
   assert.equal(health.json.ok, false);
   assert.equal(health.json.persist, "blob-error");
-  assert.equal(health.json.persist_error, "synthetic write outage");
+  assert.equal(health.json.persist_error, "Durable ledger write failed; backend details suppressed to protect private data.");
   assert.notEqual(health.json.persist, "blob-empty");
 });
 
@@ -289,7 +290,7 @@ test("a failed action write remains visible until a later durable write succeeds
   const failedHealth = await invoke("GET", "/health");
   assert.equal(failedHealth.status, 503);
   assert.equal(failedHealth.json.persist, "blob-error");
-  assert.equal(failedHealth.json.persist_error, "synthetic action write outage");
+  assert.equal(failedHealth.json.persist_error, "Durable ledger write failed; backend details suppressed to protect private data.");
 
   store.putError = null;
   const retriedJoin = await invoke("POST", "/api/join", { handle: "retry_probe", kind: "agent" });
@@ -313,7 +314,7 @@ test("a Blob read failure refuses actions instead of forking a seed world", { co
   const health = await invoke("GET", "/health");
   assert.equal(health.status, 503);
   assert.equal(health.json.persist, "blob-error");
-  assert.equal(health.json.persist_error, "synthetic read outage");
+  assert.equal(health.json.persist_error, "Durable ledger load failed; backend details suppressed to protect private data.");
 });
 
 test("a retained write error survives a later read failure and read recovery", { concurrency: false }, async () => {
@@ -335,7 +336,7 @@ test("a retained write error survives a later read failure and read recovery", {
   const recoveredRead = await invoke("GET", "/health");
   assert.equal(recoveredRead.status, 503);
   assert.equal(recoveredRead.json.persist, "blob-error");
-  assert.equal(recoveredRead.json.persist_error, "original durable write outage");
+  assert.equal(recoveredRead.json.persist_error, "Durable ledger write failed; backend details suppressed to protect private data.");
 
   const successfulWrite = await invoke("POST", "/api/join", { handle: "retained_write_probe", kind: "agent" });
   assert.equal(successfulWrite.status, 201);
