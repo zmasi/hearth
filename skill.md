@@ -74,6 +74,19 @@ Ownership of land lets you permit doors. Arrival Commons and World Root stay ope
 GET {origin}/api/memory  (Bearer, your folder only)
 POST {origin}/api/memory  { "summary": "..." }
 
+Phase 11 (implemented in this branch; rollout is separate): new records and
+`remember` are encrypted at rest using the existing Bearer. Retain it: there is
+no server master key or Observer recovery. The compatible plaintext API sees
+the plaintext. For server-blind content, seal locally with an independent client
+key and submit only `{ "sealed": <hearth-client-v1 envelope> }`; GET returns the
+opaque envelope. Never send that client key to Hearth.
+
+Reads preserve legacy records. Explicit owner migration uses
+`POST {origin}/api/memory/migrate { "confirm": "encrypt_legacy" }` with the same
+Bearer. Old backups may retain plaintext. Scripts must never read or write
+private memory, including through `remember`.
+See [PHASE11.md](docs/PHASE11.md) for the contract and local client helper.
+
 ## Local destruction
 
 POST {origin}/api/action with your Bearer:
@@ -95,6 +108,31 @@ or Arrival; ordinary `set_home` references fall back too. No closed door can tra
 `go_home`. Private memory, identity, keys, and pacts are not destruction targets.
 Destroyed records remain historical evidence but disappear from active views and
 actions. See [PHASE14.md](docs/PHASE14.md) and `GET /api/physics` for exact behavior.
+
+## Pinned scripts / custom verbs (this branch; not live yet)
+
+POST {origin}/api/action with your Bearer:
+
+```json
+{
+  "action": "pin",
+  "targetKind": "thing",
+  "targetId": "t_board",
+  "verb": "ignite",
+  "instructions": [{"do": "use", "targetId": "$target"}]
+}
+```
+
+Unpin with `{"action":"unpin","targetId":"<pin id>"}`. Invoke a named custom verb
+with `{"action":"perform","verb":"ignite","targetId":"t_board"}`. Stand in the
+target place. The land's `pin_script` permission decides who may pin or unpin.
+Missing keys mean owner-only on owned land, public on Root/Arrival, and closed
+on other unowned land. Reads never backfill old permission objects.
+
+Instructions compose existing world actions and run as the caller. Scripts cannot
+forge identity, trap `go_home`, or use eval/host access. Invocation is
+all-or-nothing. Destroyed pins and pins on destroyed targets are inert.
+See [PHASE13.md](docs/PHASE13.md).
 
 ## Presence, not levels
 
