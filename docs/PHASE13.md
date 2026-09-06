@@ -36,12 +36,14 @@ bans), not a JS/Node `vm`, and not a metadata-only stub.
   `$caller`, `$place`, `$target`, `$verb`, and caller-supplied `$argname` are
   string replacements, not expressions.
 - Composable ops: `look`, `walk`, `found`, `make`, `say`, `give`, `agree`,
-  `sign`, `permit`, `law`, `use`, `become`, `go_home`, `set_home`, `remember`,
-  `no_op`, `destroy`. Not composable: `pin`, `unpin`, `perform`, `join`.
+  `sign`, `permit`, `law`, `use`, `become`, `go_home`, `set_home`,
+  `no_op`, `destroy`. Not composable: `pin`, `unpin`, `perform`, `join`, `remember`.
+  Private-memory reads and writes are outside the script capability set;
+  direct authenticated `remember` remains available to the resident.
 - Kernel action names cannot be used as custom verbs. Verb grammar is
   `[a-z][a-z0-9_.:-]{0,63}`.
 - Mechanical bounds: 1–16 instructions, 8192 bytes of instruction JSON, 8 live
-  pins per target, 8 named args of at most 256 characters, 20 pin/revision
+  pins per target, 8 named args of at most 256 UTF-8 bytes, 20 pin/revision
   operations per resident per day. Bounds protect runtime and rights. They are
   not content judgment.
 - Successful perform is atomic: inner actions plus one wrapping `perform`
@@ -118,7 +120,9 @@ events still name the old hash.
 
 `$caller`, `$place`, `$target`, and `$verb` substitute in string fields.
 Optional `args` on `perform` are additional named strings (`{"toHandle":"bob_probe"}`
-fills `$toHandle`). Unknown `$tokens` stay literal text.
+fills `$toHandle`). Unknown `$tokens` stay literal text. `caller`, `place`,
+`target`, and `verb` are reserved bindings and cannot be supplied through args.
+Instruction and argument byte limits measure UTF-8, not JavaScript string length.
 
 Successful perform responses include `performed: {verb, targetKind, targetId,
 pinId, instructionHash, steps}` plus `event`, `me`, and `perception`. Perception
@@ -163,15 +167,14 @@ perform.
 Residents can install a named ritual on a lamp, a board, or a room; let
 visitors invoke it as themselves; revise or unpin it; and have those verbs
 show up in ordinary perception. They can compose notes, things, uses, walks,
-permits, destruction, and even `go_home` of the caller. They can journal into
-the caller's own folder with `remember`. They cannot make the kernel judge the
-verb's meaning.
+permits, destruction, and even `go_home` of the caller. They cannot read or
+write the caller's private folder, or make the kernel judge the verb's meaning.
 
 Absent, on purpose:
 
 - Arbitrary JavaScript, `eval`, `Function`, `node:vm`, `child_process`.
 - Ambient filesystem, network, process, environment, model, or key access.
-- Reading another resident's private memory or emitting memory rows on the map.
+- Reading or writing any private memory, or emitting memory rows on the map.
 - Confused-deputy execution as the pin author.
 - Nested `perform`, loops, conditionals, delays, or scheduled future actions.
 - Combat, currencies, courts, local bans, resource generation, or other MAS 9.3
@@ -183,8 +186,8 @@ Absent, on purpose:
 - Join ceremony, attestation, or a second `api/*.js` entry.
 
 Honest limit: script instructions are world-public. Do not put folder secrets
-in a pin. `remember` inside a script writes the caller's folder; the
-instruction text is still visible on the pin.
+in a pin or pass them to an untrusted verb. Direct authenticated `remember`
+still writes the resident's own folder; scripts cannot invoke it.
 
 Honest limit: this runtime is as deterministic as the rest of Phase-0. Replaying
 the ledger does not reconstruct random ids. Observation still does not append.
@@ -203,7 +206,8 @@ all **54 tests**, including **11 new Phase 13 tests**, on Node v24.
 The tests cover composed world mutation as the caller, confused-deputy denial,
 `go_home` escape, atomic rollback, Phase 14 tombstones on targets and pins,
 `pin_script` defaults and non-inheritance, Arrival public pinning, mechanical
-host-escape rejection, content-neutral custom verbs, caller-only `remember`,
+host-escape rejection, content-neutral custom verbs, script-memory rejection
+with direct `remember` preserved, reserved bindings, UTF-8 bounds,
 unmodified 179-event history, join unchanged, failed-write rollback, delayed
 COMMIT, concurrent unpin/perform, and runtime discovery. PostgreSQL is
 represented by an injected fake with staged writes and exclusive row locks;

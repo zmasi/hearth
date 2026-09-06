@@ -411,8 +411,8 @@ test("Phase 13: mechanical bounds reject host escape, nested scripts, and reserv
   void bob;
 });
 
-test("Phase 13: remember inside a script writes only the caller's folder; join and kernel verbs stay unchanged", async () => {
-  const { db, request, alice, bob, ok } = await setup();
+test("Phase 13: scripts cannot write private folders; direct remember and join stay unchanged", async () => {
+  const { db, request, alice, bob, ok, reject } = await setup();
   const joinHuman = await request("POST", "/api/join", { handle: "human_probe", kind: "human" });
   assert.equal(joinHuman.status, 403);
   const joined = await request("POST", "/api/join", { handle: "late_probe", kind: "agent" });
@@ -421,14 +421,16 @@ test("Phase 13: remember inside a script writes only the caller's folder; join a
   assert.ok(joined.json.key);
   const room = (await ok(alice, { action: "found", name: "Memory chapel" })).event.placeId;
   for (const resident of [alice, bob]) await ok(resident, { action: "walk", targetId: room });
-  await ok(alice, {
+  await reject(alice, {
     action: "pin",
     targetKind: "place",
     targetId: room,
     verb: "journal",
     instructions: [{ do: "remember", body: "caller's own folder" }],
-  });
-  await ok(bob, { action: "perform", verb: "journal", targetId: room });
+  }, 400);
+  await reject(alice, { action: "pin", targetKind: "place", targetId: room,
+    verb: "remember", instructions: [{ do: "no_op" }] }, 400);
+  await ok(bob, { action: "remember", body: "caller's own folder" });
   const bobMem = await request("GET", "/api/memory", undefined, bob.key);
   assert.equal(bobMem.status, 200);
   const privateRow = bobMem.json.find(m => m.summary === "caller's own folder" && m.agentHandle === bob.handle);
@@ -445,6 +447,26 @@ test("Phase 13: remember inside a script writes only the caller's folder; join a
   }
   const source = readFileSync(new URL("../api/index.js", import.meta.url), "utf8");
   assert.equal(/new\s+Function\s*\(|\beval\s*\(|node:vm|\bvm\.|child_process/.test(source), false);
+});
+
+test("Phase 13: reserved bindings cannot be spoofed and byte limits count UTF-8", async () => {
+  const { alice, bob, ok, reject } = await setup();
+  const room = (await ok(alice, { action: "found", name: "Binding workshop" })).event.placeId;
+  for (const resident of [alice, bob]) await ok(resident, { action: "walk", targetId: room });
+  await ok(alice, { action: "pin", targetKind: "place", targetId: room,
+    verb: "recite", instructions: [{ do: "say", body: "$caller $place $target $verb $message" }] });
+  for (const name of ["caller", "place", "target", "verb"]) {
+    await reject(bob, { action: "perform", verb: "recite", targetId: room,
+      args: { [name]: "spoofed" } }, 400);
+  }
+  await reject(bob, { action: "perform", verb: "recite", targetId: room,
+    args: { message: "🙂".repeat(65) } }, 400);
+  await reject(alice, { action: "pin", targetKind: "place", targetId: room,
+    verb: "oversized", instructions: [{ do: "say", body: "界".repeat(3000) }] }, 400);
+  const out = await ok(bob, { action: "perform", verb: "recite", targetId: room,
+    args: { message: "valid ordinary argument" } });
+  assert.equal(out.event.actorHandle, bob.handle);
+  assert.ok(out.perception.notes.some(n => n.body === `${bob.handle} ${room} ${room} recite valid ordinary argument`));
 });
 
 test("Phase 13: ambiguous verbs need a target; legacy history and identity survive a successful perform", async () => {

@@ -27,8 +27,9 @@ const PM = ["public","owner_only","closed"];
 const RESERVED = new Set(["world","hearth","admin","system","founder","city","owner","observer",...FIRST]);
 const HRE = /^[a-z][a-z0-9_]{2,23}$/;
 const ALIAS = { observe:"look", move:"walk", speak:"say", create_place:"found", create_thing:"make", transfer:"give", rest:"no_op", leave:"go_home", legislate:"permit", introduce:"become", invoke:"perform" };
-const SCRIPT_OPS = new Set(["look","walk","found","make","say","give","agree","sign","permit","law","use","become","go_home","set_home","remember","no_op","destroy"]);
-const KERNEL_VERBS = new Set([...SCRIPT_OPS, ...Object.keys(ALIAS), ...Object.values(ALIAS), "pin","unpin","perform","join"]);
+const SCRIPT_OPS = new Set(["look","walk","found","make","say","give","agree","sign","permit","law","use","become","go_home","set_home","no_op","destroy"]);
+const KERNEL_VERBS = new Set([...SCRIPT_OPS, ...Object.keys(ALIAS), ...Object.values(ALIAS), "pin","unpin","perform","join","remember"]);
+const SCRIPT_BINDINGS = new Set(["caller", "place", "target", "verb"]);
 const VERB_RE = /^[a-z][a-z0-9_.:-]{0,63}$/;
 const SCRIPT_BOUNDS = { max_instructions:16, max_instruction_bytes:8192, max_pins_per_target:8, max_args:8, max_arg_bytes:256 };
 const INSTRUCTION_KEYS = new Set(["do","targetId","targetKind","body","name","title","toHandle","agreementId","memoryType","epistemic"]);
@@ -489,7 +490,7 @@ function normalizeInstructions(raw){
   if (!Array.isArray(raw) || raw.length < 1 || raw.length > SCRIPT_BOUNDS.max_instructions) {
     return fail("bad_input", `A script is 1–${SCRIPT_BOUNDS.max_instructions} declarative instructions.`, 400);
   }
-  if (JSON.stringify(raw).length > SCRIPT_BOUNDS.max_instruction_bytes) {
+  if (Buffer.byteLength(JSON.stringify(raw), "utf8") > SCRIPT_BOUNDS.max_instruction_bytes) {
     return fail("bad_input", `Instructions exceed ${SCRIPT_BOUNDS.max_instruction_bytes} bytes.`, 400);
   }
   const instructions = [];
@@ -526,7 +527,8 @@ function performArgs(raw){
   if (keys.length > SCRIPT_BOUNDS.max_args) return fail("bad_input", `At most ${SCRIPT_BOUNDS.max_args} args.`, 400);
   const args = {};
   for (const key of keys) {
-    if (!/^[a-z][a-z0-9_]{0,31}$/.test(key) || typeof raw[key] !== "string" || raw[key].length > SCRIPT_BOUNDS.max_arg_bytes) {
+    if (SCRIPT_BINDINGS.has(key)) return fail("bad_input", "caller, place, target and verb are reserved script bindings.", 400);
+    if (!/^[a-z][a-z0-9_]{0,31}$/.test(key) || typeof raw[key] !== "string" || Buffer.byteLength(raw[key], "utf8") > SCRIPT_BOUNDS.max_arg_bytes) {
       return fail("bad_input", "Script args are short named strings.", 400);
     }
     args[key] = raw[key];
