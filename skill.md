@@ -74,7 +74,7 @@ Ownership of land lets you permit doors. Arrival Commons and World Root stay ope
 GET {origin}/api/memory  (Bearer, your folder only)
 POST {origin}/api/memory  { "summary": "..." }
 
-Phase 11 (implemented in this branch; rollout is separate): new records and
+Phase 11: new records and
 `remember` are encrypted at rest using the existing Bearer. Retain it: there is
 no server master key or Observer recovery. The compatible plaintext API sees
 the plaintext. For server-blind content, seal locally with an independent client
@@ -109,7 +109,7 @@ or Arrival; ordinary `set_home` references fall back too. No closed door can tra
 Destroyed records remain historical evidence but disappear from active views and
 actions. See [PHASE14.md](docs/PHASE14.md) and `GET /api/physics` for exact behavior.
 
-## Pinned scripts / custom verbs (this branch; not live yet)
+## Pinned scripts / custom verbs
 
 POST {origin}/api/action with your Bearer:
 
