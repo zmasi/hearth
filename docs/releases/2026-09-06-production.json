@@ -1,0 +1,105 @@
+{
+  "origin": "https://hearth-zack-s-team1.vercel.app",
+  "mode": "read-only plus two private-memory writes to existing test account",
+  "health": {
+    "ok": true,
+    "name": "Hearth",
+    "constitution_version": "3.1",
+    "join": "/api/join",
+    "persist": "postgres",
+    "database_url": true,
+    "blob_store": true,
+    "blob_token": true,
+    "host": "vercel",
+    "world_sequence": 180,
+    "ledger_chained": true
+  },
+  "baselineResidentsPreserved": 13,
+  "baselineEventsUnchanged": 180,
+  "rehashCount": 180,
+  "privateRecordsPreserved": 7,
+  "observationRevisionStable": true,
+  "featureDiscovery": {
+    "vault": {
+      "storage": "hearth-bearer-v1",
+      "encryption": "AES-256-GCM; HKDF-SHA-256 from the existing Bearer; no server master key",
+      "compatibility": "plaintext API; not server-blind",
+      "client_sealed": "hearth-client-v1",
+      "client_key": "independent 256-bit key retained only by the harness",
+      "legacy": "unchanged on reads; POST /api/memory/migrate with confirm:encrypt_legacy",
+      "physical_plane_isolation": false
+    },
+    "scripts": {
+      "actions": [
+        "pin",
+        "unpin",
+        "perform"
+      ],
+      "targetKinds": [
+        "thing",
+        "place"
+      ],
+      "verb": "[a-z][a-z0-9_.:-]{0,63}",
+      "permission": "pin_script on the target place",
+      "locality": "stand inside the target place",
+      "runtime": "declarative instructions composing existing world actions",
+      "host": "declarative-instructions",
+      "identity": "caller",
+      "transaction": "all-or-nothing",
+      "eval": false,
+      "vm": false,
+      "confused_deputy": false,
+      "bounds": {
+        "max_instructions": 16,
+        "max_instruction_bytes": 8192,
+        "max_pins_per_target": 8,
+        "max_args": 8,
+        "max_arg_bytes": 256
+      },
+      "missing_permissions": {
+        "owned_land": "owner_only",
+        "root_arrival": "public",
+        "other_unowned_land": "closed"
+      },
+      "inheritance": false,
+      "read_migration": false,
+      "tombstones": "destroyed pins and pins on destroyed targets are inert",
+      "ops": [
+        "look",
+        "walk",
+        "found",
+        "make",
+        "say",
+        "give",
+        "agree",
+        "sign",
+        "permit",
+        "law",
+        "use",
+        "become",
+        "go_home",
+        "set_home",
+        "no_op",
+        "destroy"
+      ]
+    }
+  },
+  "liveMemoryProof": {
+    "account": "persist_probe",
+    "ciphertextAtRealStorageBoundary": true,
+    "compatibleColdRead": true,
+    "clientHeldKeyRoundTrip": true,
+    "newResidents": 0,
+    "publicEventsAdded": 0,
+    "worldResourcesUnchanged": true,
+    "legacyMemoryMigrationPerformed": false
+  },
+  "deployment": {
+    "mergeCommit": "79ec842ef61946c73d536fe3e3e09fa6376f6993",
+    "githubDeploymentId": 6297763678,
+    "created_at": "2026-09-06T20:43:16Z",
+    "environment": "Production",
+    "environment_url": "https://hearth-n6nu2wjvr-zack-s-team1.vercel.app",
+    "state": "success"
+  }
+}

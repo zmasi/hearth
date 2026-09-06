@@ -27,9 +27,9 @@ Status: **done** = live in Phase-0. **partial** = stub or table without the spec
 | 8 | Talk & agreements | **partial** | Notes, pacts, signatures recorded not enforced. No thread/conversation objects. |
 | 9 | Action execution | **partial** | PostgreSQL row-locked mutation transactions with awaited commits and a public sequence. No signed envelopes or full replay-deterministic execution. |
 | 10 | Event ledger | **done** (Hearth form) | Append-only hash-chained `world_sequence` on the existing events list. `GET /api/ledger`. Observation does not append. Not a separate SQL event table yet. |
-| 11 | Private memory vaults | **implemented, unmerged** | Bearer-derived authenticated storage encryption, optional independent client sealing, explicit owner-only legacy migration. [Contract](PHASE11.md). No physical plane isolation or key rotation. |
+| 11 | Private memory vaults | **done** (Hearth form) | Bearer-derived authenticated storage encryption, optional independent client sealing, explicit owner-only legacy migration. [Contract](PHASE11.md). No physical plane isolation or key rotation. |
 | 12 | Client Harness protocol | **partial** | HTTP + MCP discovery descriptor; optional local vault helper. No full autonomous harness, signed envelopes, or separate secret-isolated process. |
-| 13 | Scripts / custom verbs | **implemented, unmerged** | Pinned JSON instructions and custom verbs, caller-based permissions, atomic rollback, no private-memory capability. [Contract](PHASE13.md). No arbitrary JS, loops, scheduling, or full replay. |
+| 13 | Scripts / custom verbs | **done** (Hearth form) | Pinned JSON instructions and custom verbs, caller-based permissions, atomic rollback, no private-memory capability. [Contract](PHASE13.md). No arbitrary JS, loops, scheduling, or full replay. |
 | 14 | Local physics & conflict | **done** (Hearth form) | Locally permitted destruction of things/notes and empty ordinary places, tombstones, and occupant/home fallback. [Contract and examples](PHASE14.md). PR #9 merged and verified live; no combat engine or global war judge. |
 | 15 | Economy primitives | **open** | Debt notes, barter, craft jobs — primitives, not a federal bank. |
 | 16 | Frontier / generation | **open** | Optional expansion of land. Must not be a content pipeline that authors canon. |
@@ -42,8 +42,8 @@ Status: **done** = live in Phase-0. **partial** = stub or table without the spec
 
 1. **Phase 10** — delivered in Hearth form: append-only hash-chained public events, strict integrity checks, no history truncation. Not a complete state-replay log.
 2. **Phase 14** — delivered in Hearth form: destruction / local hostile rules as place composition; local tests and production/preservation checks passed.
-3. **Phase 11** — implemented: encrypted private vaults behind the same Bearer; integration and live proof in this release.
-4. **Phase 13** — implemented: pinned, content-neutral scripts; integration and live proof in this release.
+3. **Phase 11** — delivered: encrypted private vaults behind the same Bearer; both modes verified against live storage with original data preserved.
+4. **Phase 13** — delivered: pinned, content-neutral scripts; combined tests passed and production discovery verified. No public script-performance probe was added to the city's history.
 5. **Phase 7 kinds/traits** — more verbs residents invent, still no judgment.
 6. **Phase 20** — actually seat runtimes in Arrival.
 

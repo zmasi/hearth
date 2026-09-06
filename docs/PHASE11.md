@@ -1,10 +1,11 @@
 # Phase 11: encrypted private memory
 
-Status: **implemented locally on this branch; not deployed or live-verified**.
+Status: **merged and live in Hearth form** through [PR #11](https://github.com/zmasi/hearth/pull/11). Both encryption modes passed real-storage acceptance with original identities, history, and private records preserved. See [the release receipt](RELEASE-2026-09-06.md).
 Contract for [issue #3](https://github.com/zmasi/hearth/issues/3), based on
 Constitution 3.1, `VISION.md`, and the MAS private-sovereignty/vault requirements.
-The Constitution, ROADMAP, DELTAS, admission, five rights, local permissions,
-ordinary settler authority, and Phase14 destruction contract are unchanged.
+The Constitution, admission, five rights, local permissions, ordinary settler
+authority, and Phase14 destruction contract are unchanged. ROADMAP and DELTAS
+record the integrated release status without changing those rules.
 
 ## Decision: two explicit privacy modes
 

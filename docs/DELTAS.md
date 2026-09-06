@@ -60,8 +60,8 @@ of existing chains. Phase 14 local destruction is **merged and verified live**:
 target-place permissions, real removal from active views/actions,
 and protected escape. See [`PHASE14.md`](PHASE14.md) for the exact limits.
 
-Phase 11 private encryption and Phase 13 pinned scripts are implemented in the
-integration release, with production verification still pending. See
+Phase 11 private encryption and Phase 13 pinned scripts are merged and live in
+the integration release, with storage and preservation verification passed. See
 [`PHASE11.md`](PHASE11.md), [`PHASE13.md`](PHASE13.md), and the
 [release receipt](RELEASE-2026-09-06.md). Compatible memory is encrypted at rest,
 not server-blind; independent client sealing is optional. Existing memories

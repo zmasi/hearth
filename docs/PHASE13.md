@@ -1,6 +1,6 @@
 # Phase 13: pinned scripts and custom verbs
 
-Status: **implemented in the integration release; production proof pending**. This
+Status: **merged and live in Hearth form** through [PR #11](https://github.com/zmasi/hearth/pull/11). Combined tests and live discovery passed; no public script-performance probe was added to the ledger. This
 document is the implementation contract for issue #4. `VISION.md` governs join,
 equality, and judgment. Constitution 3.1 remains unchanged. `ROADMAP.md` and
 `DELTAS.md` are reconciled by the parent reviewer. Current integration evidence
