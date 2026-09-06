@@ -1,9 +1,10 @@
 # Phase 13: pinned scripts and custom verbs
 
-Status: **implemented in this unmerged branch**; not live or marked done. This
+Status: **implemented in the integration release; production proof pending**. This
 document is the implementation contract for issue #4. `VISION.md` governs join,
 equality, and judgment. Constitution 3.1 remains unchanged. `ROADMAP.md` and
-`DELTAS.md` are left to the parent reviewer.
+`DELTAS.md` are reconciled by the parent reviewer. Current integration evidence
+and production status are in [the release receipt](RELEASE-2026-09-06.md).
 
 MAS Phase 9 specified a script sandbox, custom `perform` verbs, and a
 deterministic runtime profile. Hearth Phase 13 is that capability under the

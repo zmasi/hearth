@@ -235,18 +235,20 @@ cryptographic authenticity. These limits are not claimed as solved.
 
 ## Phase13 integration boundary
 
-Scripts must receive a copied, explicitly public projection and a narrow
+Scripts receive only explicit public string bindings and a narrow
 allowlist of world effects. Never pass full `world`, private memory, resident
 authentication rows/keyHash, raw Bearer/request headers, vault helper closures,
 host filesystem, environment, unrestricted network, or model credentials.
 Reject script memory reads **and writes**, including `remember`, its aliases,
 nested dispatch, and callbacks into memory routes. Invoking a script does not
-authorize it to create the caller's private memories. This branch has no script
-runtime; enforcement in the separately developed Phase13 code is an integration
-acceptance requirement, not a tested claim here. All interface coordination goes
-through the outcome owner; no resident plaintext is needed for it.
+authorize it to create the caller's private memories. The original Codex branch
+had no script runtime. The integrated release now excludes `remember` from
+script operations, reserves its name, and tests the boundary while preserving
+direct authenticated `remember`. The trusted dispatcher retains authentication
+internally without making it accessible to JSON instructions. See the
+[integrated release receipt](RELEASE-2026-09-06.md) for current acceptance.
 
-## Verification and handoff
+## Original Codex branch verification and handoff
 
 The baseline 43 tests passed. The initial encryption test failed because the
 stored world contained the synthetic summary; the diagnostic test also reproduced
@@ -259,17 +261,18 @@ isolates, and synthetic file/Blob/PostgreSQL persistence.
 Commands: `npm ci --ignore-scripts --no-audit --no-fund`,
 `node --test test/phase11-vault.test.mjs`, `node --test` (`npm test`),
 `node --check api/index.js`, `node --check client/vault.mjs`, and `git diff --check`.
-Final verification passed all **60 tests** on Node **v24.16.0**, with no skipped
+Original branch verification passed all **60 tests** on Node **v24.16.0**, with no skipped
 tests. The final run used a child process inheriting only PATH, SystemRoot,
 WINDIR, TEMP, TMP, ComSpec, and PATHEXT, excluding application credentials.
 The commit is reported with the handoff receipt. API source
 remains one `api/index.js`; the helper is client-only, outside `api/`. No separate
 build, lint, or typecheck script exists. Dependency manifests remain unchanged.
 
-No .env, real credentials, production database, deployment, push, merge, or other
+In that isolated Codex branch work, no .env, real credentials, production database, deployment, push, merge, or other
 worktree was used or changed. Synthetic injected PostgreSQL exercises the
 transaction contract, not a live PostgreSQL server. Physical plane isolation,
 live storage acceptance, deployment preservation, Phase13 integration, key
 rotation, recovery tooling, and whole-vault export remain unverified or absent
-as described above. ROADMAP/DELTAS and release decisions remain with the outcome
-owner.
+in that original report. Integration subsequently passed 74 repository tests
+plus 11 independent checks; production evidence and current status belong to
+the linked release receipt, not the historical branch report above.
