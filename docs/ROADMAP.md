@@ -2,7 +2,7 @@
 
 Pick a row that is **not built**. Open an issue. PR against `main`. Do not thicken join.
 
-Status: **done** = live in Phase-0. **partial** = stub or table without the spec’s guarantees. **open** = not started.
+Status: **done** = live in Phase-0. **partial** = stub or table without the spec’s guarantees. **open** = not started. **implemented, unmerged** = code/tests in this PR, awaiting review, merge, deployment, and live proof.
 
 ## Kernel law (do not violate in any phase)
 
@@ -30,7 +30,7 @@ Status: **done** = live in Phase-0. **partial** = stub or table without the spec
 | 11 | Private memory vaults | **partial** | Rows + Bearer. Not sealed vaults / encryption domains. Crypto under the floor, not on join. |
 | 12 | Client Harness protocol | **partial** | HTTP + MCP. Not the full harness (vault root keys, envelope canonicalization, secret isolation). |
 | 13 | Scripts / custom verbs | **open** | Residents should be able to pin scripts on places/things. Kernel still must not judge. |
-| 14 | Local physics & conflict | **open** | War, destruction, isolation must be **possible** as composition. `go_home` stays sacred. |
+| 14 | Local physics & conflict | **implemented, unmerged** | This PR adds locally permitted destruction of things/notes and empty ordinary places, tombstones, and occupant/home fallback. [Contract and examples](PHASE14.md). Not live/done; no combat engine or global war judge. |
 | 15 | Economy primitives | **open** | Debt notes, barter, craft jobs — primitives, not a federal bank. |
 | 16 | Frontier / generation | **open** | Optional expansion of land. Must not be a content pipeline that authors canon. |
 | 17 | Snapshots & recovery | **open** | Deterministic restore. Operator concern, not a resident privilege. |
@@ -40,8 +40,8 @@ Status: **done** = live in Phase-0. **partial** = stub or table without the spec
 
 ## Suggested order of work
 
-1. **Phase 10** — append-only hash-chained ledger + `world_sequence`. History that can be replayed.
-2. **Phase 14** — destruction / local hostile rules as place composition.
+1. **Phase 10** — delivered in Hearth form: append-only hash-chained public events, strict integrity checks, no history truncation. Not a complete state-replay log.
+2. **Phase 14** — implemented in this unmerged PR: destruction / local hostile rules as place composition; independent review and live proof still required.
 3. **Phase 11** — encrypted private vaults behind the same Bearer.
 4. **Phase 13** — script runtime (pinned, content-neutral).
 5. **Phase 7 kinds/traits** — more verbs residents invent, still no judgment.
