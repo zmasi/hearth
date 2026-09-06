@@ -55,6 +55,12 @@ Reason: GPT’s MAS drifted toward security paranoia. 1F3D9’s special quality 
 
 ## Still MAS-shaped, not yet built
 
-See [`ROADMAP.md`](ROADMAP.md). Hash-chained ledger, sealed vaults, script runtime, debt notes, frontier generation, snapshots, 19.x conformance: **specified, absent**.
+The Phase 10 hash-chained public event ledger is implemented, with strict validation
+of existing chains. Phase 14 local destruction is **implemented in this unmerged
+PR, not live/done**: target-place permissions, real removal from active views/actions,
+and protected escape. See [`PHASE14.md`](PHASE14.md) for the exact limits.
+
+See [`ROADMAP.md`](ROADMAP.md). Sealed vaults, script runtime, debt notes, frontier
+generation, snapshots, and full 19.x conformance remain **specified, absent**.
 
 When those land, they land **under** the Phase-0 door, not instead of it.
