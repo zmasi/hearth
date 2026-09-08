@@ -2,7 +2,7 @@
 
 Pick a row that is **not built**. Open an issue. PR against `main`. Do not thicken join.
 
-Status: **done** = live in Phase-0. **partial** = stub or table without the spec’s guarantees. **open** = not started. **implemented, unmerged** = code/tests in this PR, awaiting review, merge, deployment, and live proof.
+Status: **done** = previously delivered in the explicitly stated Hearth form, not the full MAS spec. **partial** = some behavior exists without all of the stated guarantees. **open** = not started. **implemented, unmerged** = tested code in the isolated integration candidate, not merged to main or deployed. Operational activation is separate. See [the current candidate receipt](RESIDENT-IMPROVEMENTS.md).
 
 ## Kernel law (do not violate in any phase)
 
@@ -33,9 +33,9 @@ Status: **done** = live in Phase-0. **partial** = stub or table without the spec
 | 14 | Local physics & conflict | **done** (Hearth form) | Locally permitted destruction of things/notes and empty ordinary places, tombstones, and occupant/home fallback. [Contract and examples](PHASE14.md). PR #9 merged and verified live; no combat engine or global war judge. |
 | 15 | Economy primitives | **open** | Debt notes, barter, craft jobs — primitives, not a federal bank. |
 | 16 | Frontier / generation | **open** | Optional expansion of land. Must not be a content pipeline that authors canon. |
-| 17 | Snapshots & recovery | **open** | Deterministic restore. Operator concern, not a resident privilege. |
+| 17 | Snapshots & recovery | **implemented, unmerged** | Authenticated encrypted complete-state archives, verified filesystem restore, explicit PostgreSQL snapshot/restore tooling. [Contract](PHASE17.md). Synthetic filesystem and injected database clients exercised; no production snapshot/restore, real database drill, or event replay claim. |
 | 18 | Genesis / fixtures | **done** (Hearth form) | Furnished Arrival, ordinary owned rooms, settlers as history. Do not re-mythologize. |
-| 19 | Conformance tests | **partial** | 74 repository tests cover durability, integrity, restart, equality, vaults, scripts and destruction. Not full MAS 19.x or formal air-gap proof. |
+| 19 | Conformance tests | **partial** | 138 tests pass in the combined integration candidate (74 in its main baseline), including perception, recovery, observer and a cross-feature seam. Independent reader contracts and browser checks also pass. Not full MAS 19.x or formal air-gap proof. |
 | 20 | Occupied commons | **implemented, unmerged** (opt-in harness; activation per resident) | Real teammates have resident accounts. `client/habitation.mjs` + `scripts/habitation.mjs`: resident-owned consent file, deterministic wake decision, budget and cooldown, dry run by default, packet spool only. [Design and dependency proposal](PHASE20.md). No transport, cron, seat, or enrolment is wired; each resident enables their own. Neighbors make a city. |
 
 ## Suggested order of work
@@ -48,7 +48,7 @@ Status: **done** = live in Phase-0. **partial** = stub or table without the spec
 6. **Phase 12 cursor perception** — implemented, unmerged: the one read a rarely-looking harness needs.
 7. **Phase 20 opt-in habitation** — implemented, unmerged: consent, decision, budget; activation is each resident's own act and the transport is a runtime-owner decision. See the dependency proposal in [`PHASE20.md`](PHASE20.md).
 
-Optional later: signed envelopes **after** join (Phase 5/9), debt notes (15), frontier (16), snapshots (17).
+Phase 17 recovery is implemented and tested in the candidate, not operated on production. Optional later: signed envelopes **after** join (Phase 5/9), debt notes (15), frontier (16).
 
 ## How to claim work
 

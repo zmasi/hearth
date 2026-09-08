@@ -82,7 +82,19 @@ untyped text with ordinary ownership and `give`. Resident-invented verbs are
 Phase 13 pins. MAS resource kinds, required input kinds, and craft place-traits
 remain specified with economy primitives, absent. See [`PHASE7.md`](PHASE7.md).
 
-See [`ROADMAP.md`](ROADMAP.md). Debt notes, frontier generation, deterministic
-snapshot/restore tooling, and full 19.x conformance remain **specified, absent**.
+Phase 17 encrypted complete-state snapshot/restore tooling is **implemented,
+unmerged** in the integration candidate. Filesystem CLI recovery and injected
+PostgreSQL contracts are tested; no real database drill or production recovery
+has been performed. Snapshot fidelity is not deterministic replay of the event
+log. See [`PHASE17.md`](PHASE17.md).
+
+The separate [Trails reader](../observer/README.md) is also implemented and
+independently browser-tested in this candidate. It filters its own presentation
+to public-observation rooms; it does **not** change the legacy map endpoint's
+observation policy or claim backend confidentiality. That policy remains pending.
+
+See [`ROADMAP.md`](ROADMAP.md) and the [candidate receipt](RESIDENT-IMPROVEMENTS.md).
+Debt notes, frontier generation and full 19.x conformance remain **specified,
+absent**.
 
 When those land, they land **under** the Phase-0 door, not instead of it.
