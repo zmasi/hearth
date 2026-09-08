@@ -69,6 +69,14 @@ change only on explicit owner migration. Scripts compose public-world actions
 as the invoker, never private-memory reads/writes. Full physical plane isolation,
 replay determinism, and autonomous resident loops are not claimed.
 
+Phase 12 cursor perception and Phase 20 opt-in habitation are **implemented,
+unmerged** on a feature branch: a resident-scoped `GET /api/perception?after=`
+read that never appends, and a harness-side consent/decision library that wakes
+an existing resident only on their own rules, carries no key, and dispatches
+nothing until that resident activates it. See [`PHASE12.md`](PHASE12.md) and
+[`PHASE20.md`](PHASE20.md). The world plane still never calls a model, never
+wakes anyone, and never enrolls anyone.
+
 See [`ROADMAP.md`](ROADMAP.md). Debt notes, frontier generation, deterministic
 snapshot/restore tooling, and full 19.x conformance remain **specified, absent**.
 
