@@ -69,6 +69,11 @@ change only on explicit owner migration. Scripts compose public-world actions
 as the invoker, never private-memory reads/writes. Full physical plane isolation,
 replay determinism, and autonomous resident loops are not claimed.
 
+Phase 7 thing kinds/traits as kernel physics were **not** built. Live things stay
+untyped text with ordinary ownership and `give`. Resident-invented verbs are
+Phase 13 pins. MAS resource kinds, required input kinds, and craft place-traits
+remain specified with economy primitives, absent. See [`PHASE7.md`](PHASE7.md).
+
 See [`ROADMAP.md`](ROADMAP.md). Debt notes, frontier generation, deterministic
 snapshot/restore tooling, and full 19.x conformance remain **specified, absent**.
 
