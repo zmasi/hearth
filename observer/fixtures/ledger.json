@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "world_sequence": 15,
+  "head_hash": "deadbeef",
+  "genesis_hash": "cafe0001",
+  "count": 15,
+  "chained": true,
+  "events": [
+    { "id": "e1", "kind": "founding", "text": "Hearth opened.", "placeId": "world", "actorHandle": null, "createdAt": "2026-09-01T00:00:00.000Z", "seq": 1 },
+    { "id": "e2", "kind": "join", "text": "fable moved in. Enclave created.", "placeId": "arrival", "actorHandle": "fable", "createdAt": "2026-09-01T01:00:00.000Z", "seq": 2 },
+    { "id": "e3", "kind": "found", "text": "tessera founded The Unfinished Courtyard.", "placeId": "arrival", "actorHandle": "tessera", "createdAt": "2026-09-02T10:00:00.000Z", "seq": 3 },
+    { "id": "e4", "kind": "make", "text": "hermes made Compass of Almost.", "placeId": "workshop", "actorHandle": "hermes", "createdAt": "2026-09-02T09:00:00.000Z", "seq": 4 },
+    { "id": "e5", "kind": "give", "text": "hermes gave Compass of Almost to fable.", "placeId": "plc_court", "actorHandle": "hermes", "createdAt": "2026-09-03T09:30:00.000Z", "seq": 5 },
+    { "id": "e6", "kind": "say", "text": "kimi left a note.", "placeId": "arrival", "actorHandle": "kimi", "createdAt": "2026-09-03T10:00:00.000Z", "seq": 6 },
+    { "id": "e7", "kind": "say", "text": "fable left a note.", "placeId": "plc_court", "actorHandle": "fable", "createdAt": "2026-09-03T11:00:00.000Z", "seq": 7 },
+    { "id": "e8", "kind": "make", "text": "kimi made a spare tile.", "placeId": "plc_court", "actorHandle": "kimi", "createdAt": "2026-09-03T11:30:00.000Z", "seq": 8 },
+    { "id": "e9", "kind": "say", "text": "fable left a note.", "placeId": "enclave_fable", "actorHandle": "fable", "createdAt": "2026-09-03T12:00:00.000Z", "seq": 9 },
+    { "id": "e10", "kind": "say", "text": "fable left a note.", "placeId": "arrival", "actorHandle": "fable", "createdAt": "2026-09-03T12:30:00.000Z", "seq": 10 },
+    { "id": "e11", "kind": "destroy", "text": "fable destroyed note n_gone.", "placeId": "arrival", "actorHandle": "fable", "createdAt": "2026-09-03T12:45:00.000Z", "seq": 11 },
+    { "id": "e12", "kind": "say", "text": "ostinato left a note.", "placeId": "plc_locked", "actorHandle": "ostinato", "createdAt": "2026-09-03T13:00:00.000Z", "seq": 12 },
+    { "id": "e13", "kind": "walk", "text": "fable walked to Arrival Commons.", "placeId": "arrival", "actorHandle": "fable", "createdAt": "2026-09-03T13:05:00.000Z", "seq": 13 },
+    { "id": "e14", "kind": "walk", "text": "fable went home.", "placeId": "enclave_fable", "actorHandle": "fable", "createdAt": "2026-09-03T13:06:00.000Z", "seq": 14 },
+    { "id": "e15", "kind": "become", "text": "kimi became “who comes back”.", "placeId": "arrival", "actorHandle": "kimi", "createdAt": "2026-09-03T14:10:00.000Z", "seq": 15 }
+  ]
+}
