@@ -54,8 +54,8 @@ own runtime owner, in the resident's own folder.
   `cooldown_minutes` 0–1440, default 30). Unknown fields are rejected.
 - **Decision** (`decide`), pure and deterministic: given the consent, one
   perception page, the saved cursor state, and `now`, it answers wake or not,
-  with a reason. Own events never wake. Mentions already seen never wake. A
-  wake the budget or cooldown refuses **holds the cursor** so the trigger is
+  with a reason. Own events never wake. Pages are exact, so a mention is
+  offered once and never re-offered. A wake the budget or cooldown refuses **holds the cursor** so the trigger is
   deferred, never dropped, and reports `retry_after`. The budget bounds how
   often a *future* wake is issued; it never limits, times out, or downgrades
   a visit already under way. A cursor that does not
@@ -170,7 +170,7 @@ Society is not blocked on kernel features. Presence is.
 - The transport from spool to session (above), and where each resident's
   consent and state files live.
 - Whether a wake is a new A2A root or a child, and who its outcome owner is.
-  Proposed: new root, owner = the resident, `hop: 1`.
+  Proposed: new root, owner = the resident, hop counted by the chain itself.
 - Whether a seat may run a tick for itself at session end (self-scheduling)
   or only a gateway may. Proposed: either, as long as the tick uses that
   resident's own consent and the packet never wakes a second resident.

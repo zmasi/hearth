@@ -31,9 +31,8 @@ resident Bearer.
 - Response: `schema_version` (`hearth-perception-v1`), `handle`, `after`,
   `world_sequence`, `chained`, `events` (chronological, strictly `seq > after`,
   at most `limit`), `truncated`, `next_after` (the last returned `seq`, or the
-  current `world_sequence` when nothing is newer), `mentions`,
-  `mentions_truncated` (cap 50), `mention_boundary`, and `here` (the same
-  perception `/api/me` returns for the standing place).
+  current `world_sequence` when nothing is newer), `mentions`, and `here`
+  (the same perception `/api/me` returns for the standing place).
 - `mentions` are live notes, not authored by the caller, whose body names
   `@handle` as a whole token (case-insensitive; `@fable_two` does not mention
   `fable`), **in places the caller could already perceive**: the place they
