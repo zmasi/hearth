@@ -12,14 +12,21 @@
 //   4. Destroyed resources are already absent from the map. Their destroy
 //      events remain in the public ledger and are shown as tombstones:
 //      kind and id only, never recovered content.
-//   5. Ownership is not authorship. Things record an owner, not an author.
-//      Authorship is reported only when the public ledger records it
-//      (a matching make event); otherwise it is marked unknown, not guessed.
+//   5. Ownership is not authorship, and a transfer is not authorship either.
+//      Things record an owner, not an author. Authorship is claimed only
+//      from unambiguous public make evidence (a single make event naming the
+//      thing, with no live name collision). A first public giver is not a
+//      maker. Ambiguous or missing evidence is marked "not recorded", and
+//      an unrecorded object never enters an author lane under its holder.
 //   6. A stored location is not presence. standingId is rendered as
 //      "last stood", only when that place is itself publicly observable.
 //   7. Nothing here ranks residents. Depth is displayed as a footnote,
 //      residents are listed alphabetically, and there is no attendance
 //      or activity count per resident.
+//   8. Ledger citations are honest about their strength. A kernel-provided
+//      note.seq is exact. An actor/place/time-inferred note pairing is an
+//      estimated association and is labeled as such; an ambiguous pairing
+//      cites no sequence at all. Direct ledger events keep exact seqs.
 
 export const MOVEMENT_KINDS = new Set(["walk", "look", "home"]);
 
@@ -116,83 +123,169 @@ export function buildModel(map, ledger) {
   };
 }
 
-// Attach ledger sequence numbers to world objects by matching the events
-// that created them, and derive thing provenance (maker, custody chain).
-function linkEvents(model) {
-  const notePool = new Map(); // actor|place -> events not yet matched
+// Attach ledger sequence numbers to world objects and derive provenance.
+//
+// Citation discipline:
+//   - A kernel-provided note.seq (post-phase cb41654 worlds) is exact.
+//   - A note↔say pairing inferred from actor+place+time is an ESTIMATED
+//     association: it is labeled as such, and omitted entirely when the
+//     pairing is ambiguous (a tie). Resolution below is deterministic and
+//     independent of input array order.
+//   - A make event names its thing in kernel-generated text, but only by
+//     NAME. Unique-name makes are unambiguous evidence and may claim an
+//     exact creator and creation seq. Any live name collision, or a
+//     missing make, means authorship is not recorded.
+//   - A give establishes a transfer, never a maker. The first public giver
+//     is not proof of origin.
+
+function pairSayEvents(model) {
+  // Group notes and say events by actor|place, then resolve pairings in a
+  // deterministic three-pass process. Returns noteSeq Map(id -> citation)
+  // and the say events no surviving note could claim (tombstones).
+  const groupKey = (actor, placeId) => `${actor}|${placeId}`;
+  const noteGroups = new Map();
+  for (const n of model.notes) {
+    const key = groupKey(n.authorHandle, n.placeId);
+    if (!noteGroups.has(key)) noteGroups.set(key, []);
+    noteGroups.get(key).push(n);
+  }
+  const sayGroups = new Map();
   for (const e of model.events) {
     if (e.kind !== "say") continue;
-    const key = `${e.actorHandle}|${e.placeId}`;
-    if (!notePool.has(key)) notePool.set(key, []);
-    notePool.get(key).push(e);
+    const key = groupKey(e.actorHandle, e.placeId);
+    if (!sayGroups.has(key)) sayGroups.set(key, []);
+    sayGroups.get(key).push(e);
   }
-  const noteSeq = new Map();
-  const unmatchedSay = [];
-  for (const e of model.events) if (e.kind === "say") unmatchedSay.push(e);
 
-  for (const n of model.notes) {
-    const key = `${n.authorHandle}|${n.placeId}`;
-    const pool = (notePool.get(key) || []).filter((e) =>
-      Math.abs(new Date(e.createdAt) - new Date(n.createdAt)) <= ABSORB_WINDOW_MS);
-    if (pool.length) {
-      pool.sort((a, b) => Math.abs(new Date(a.createdAt) - new Date(n.createdAt))
-        - Math.abs(new Date(b.createdAt) - new Date(n.createdAt)));
-      const hit = pool[0];
-      noteSeq.set(n.id, hit.seq);
-      const i = unmatchedSay.indexOf(hit);
-      if (i >= 0) unmatchedSay.splice(i, 1);
-      const arr = notePool.get(key);
-      const j = arr.indexOf(hit);
-      if (j >= 0) arr.splice(j, 1);
+  const noteSeq = new Map();
+  const consumed = new Set();
+  const within = (a, b) => Math.abs(new Date(a.createdAt) - new Date(b.createdAt)) <= ABSORB_WINDOW_MS;
+
+  for (const [key, notes] of noteGroups) {
+    const sorted = notes.slice().sort((a, b) =>
+      String(a.createdAt).localeCompare(String(b.createdAt)) || String(a.id).localeCompare(String(b.id)));
+    const events = (sayGroups.get(key) || []).slice().sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+
+    // Pass 0: kernel-provided seqs are exact; consume the matching event.
+    for (const n of sorted) {
+      if (typeof n.seq !== "number") continue;
+      noteSeq.set(n.id, { seq: n.seq, estimated: false, ambiguous: false });
+      const hit = events.find((e) => e.seq === n.seq && !consumed.has(e));
+      if (hit) consumed.add(hit);
+    }
+
+    // Pass 1: mutually unambiguous pairs — a note with exactly one candidate
+    // event whose only candidate note is that note — are estimated matches.
+    let progress = true;
+    while (progress) {
+      progress = false;
+      for (const n of sorted) {
+        if (noteSeq.has(n.id)) continue;
+        const candidates = events.filter((e) => !consumed.has(e) && within(e, n));
+        if (candidates.length !== 1) continue;
+        const ev = candidates[0];
+        const rivalNotes = sorted.filter((m) => !noteSeq.has(m.id) && within(ev, m));
+        if (rivalNotes.length !== 1) continue;
+        noteSeq.set(n.id, { seq: ev.seq ?? null, estimated: true, ambiguous: false });
+        consumed.add(ev);
+        progress = true;
+      }
+    }
+
+    // Pass 2: anything left with candidates is ambiguous — cite nothing, but
+    // still consume one event per surviving note (nearest, then lowest seq)
+    // so a present note's say is never rendered as a tombstone.
+    for (const n of sorted) {
+      if (noteSeq.has(n.id)) continue;
+      const candidates = events.filter((e) => !consumed.has(e) && within(e, n));
+      noteSeq.set(n.id, {
+        seq: null,
+        estimated: true,
+        ambiguous: candidates.length > 0,
+        candidates: candidates.map((e) => e.seq ?? null),
+      });
+      if (candidates.length) {
+        candidates.sort((a, b) =>
+          (Math.abs(new Date(a.createdAt) - new Date(n.createdAt)) - Math.abs(new Date(b.createdAt) - new Date(n.createdAt)))
+          || ((a.seq ?? 0) - (b.seq ?? 0)));
+        consumed.add(candidates[0]);
+      }
     }
   }
 
-  const makeByName = new Map(); // name -> event
-  const foundByName = new Map();
-  const gives = [];
+  const unmatchedSay = model.events.filter((e) => e.kind === "say" && !consumed.has(e));
+  return { noteSeq, unmatchedSay };
+}
+
+function linkEvents(model) {
+  const { noteSeq, unmatchedSay } = pairSayEvents(model);
+
+  const makesByName = new Map(); // name -> [events]
+  const foundsByName = new Map();
+  const givesByName = new Map();
   for (const e of model.events) {
     if (e.kind === "make") {
       const p = parseNameAct(e.text, "made");
-      if (p) makeByName.set(`${p.actor}|${p.name}`, e);
+      if (p) {
+        if (!makesByName.has(p.name)) makesByName.set(p.name, []);
+        makesByName.get(p.name).push(e);
+      }
     } else if (e.kind === "found") {
       const p = parseNameAct(e.text, "founded");
-      if (p) foundByName.set(p.name, e);
+      if (p) {
+        if (!foundsByName.has(p.name)) foundsByName.set(p.name, []);
+        foundsByName.get(p.name).push(e);
+      }
     } else if (e.kind === "give") {
       const p = parseGive(e.text);
-      if (p) gives.push({ ...p, seq: e.seq, at: e.createdAt, eventId: e.id });
+      if (p) {
+        if (!givesByName.has(p.name)) givesByName.set(p.name, []);
+        givesByName.get(p.name).push({ ...p, seq: e.seq, at: e.createdAt, eventId: e.id, placeId: e.placeId });
+      }
     }
   }
 
   const thingInfo = new Map();
   for (const t of model.things) {
-    // Custody: all gives naming this thing, in order. A give names the thing
-    // by name, so colliding names degrade gracefully to "not recorded".
-    const custody = gives.filter((g) => g.name === t.name);
-    const lastCustody = custody.length ? custody[custody.length - 1] : null;
-    // Maker: prefer the first custody source; else a make event naming the
-    // current owner; else unknown.
+    const namesCollide = model.things.some((x) => x.id !== t.id && x.name === t.name);
     let madeBy = null;
-    if (custody.length) madeBy = custody[0].from;
-    else {
-      const ev = makeByName.get(`${t.ownerHandle}|${t.name}`);
-      if (ev) madeBy = t.ownerHandle;
+    let makeSeq = null;
+    let custody = [];
+    let custodyUncertain = false;
+    if (namesCollide) {
+      // The ledger names things, never their ids: with a live collision no
+      // make or give can be pinned to this object. A give lands a thing in
+      // the recipient's standing place, so same-place gives are kept as
+      // separately-labeled uncertain evidence — never merged into one chain.
+      custody = (givesByName.get(t.name) || []).filter((g) => g.placeId === t.placeId);
+      custodyUncertain = custody.length > 0;
+    } else {
+      const makes = makesByName.get(t.name) || [];
+      if (makes.length === 1) {
+        madeBy = makes[0].actorHandle ?? null;
+        makeSeq = makes[0].seq ?? null;
+      }
+      custody = givesByName.get(t.name) || [];
     }
-    const makeEv = madeBy ? makeByName.get(`${madeBy}|${t.name}`) : null;
     thingInfo.set(t.id, {
       heldBy: t.ownerHandle,
       madeBy,
-      authorRecorded: Boolean(madeBy),
+      authorRecorded: madeBy != null,
       transferred: custody.length > 0,
       custody,
-      makeSeq: makeEv?.seq ?? null,
-      namesCollide: model.things.filter((x) => x.name === t.name).length > 1,
+      custodyUncertain,
+      makeSeq,
+      namesCollide,
     });
   }
 
   const placeSeq = new Map();
+  const placeNameCounts = new Map();
+  for (const p of model.places) placeNameCounts.set(p.name, (placeNameCounts.get(p.name) || 0) + 1);
   for (const p of model.places) {
-    const ev = foundByName.get(p.name);
-    if (ev) placeSeq.set(p.id, ev.seq);
+    if (placeNameCounts.get(p.name) !== 1) continue;
+    const founds = foundsByName.get(p.name) || [];
+    if (founds.length === 1) placeSeq.set(p.id, founds[0].seq ?? null);
   }
 
   return { noteSeq, unmatchedSay, thingInfo, placeSeq };
@@ -203,6 +296,7 @@ export function buildChronology(model, linked = linkEvents(model)) {
   const placeName = (id) => model.placeById.get(id)?.name ?? id;
 
   for (const n of model.notes) {
+    const cite = linked.noteSeq.get(n.id) ?? { seq: null, estimated: false, ambiguous: false };
     entries.push({
       kind: "note",
       id: n.id,
@@ -212,7 +306,10 @@ export function buildChronology(model, linked = linkEvents(model)) {
       placeName: placeName(n.placeId),
       title: null,
       body: n.body,
-      seq: linked.noteSeq.get(n.id) ?? null,
+      seq: cite.seq,
+      seqEstimated: cite.estimated,
+      seqAmbiguous: cite.ambiguous,
+      seqCandidates: cite.candidates ?? null,
       provenance: { author: n.authorHandle, recorded: true },
     });
   }
@@ -223,18 +320,22 @@ export function buildChronology(model, linked = linkEvents(model)) {
       kind: "thing",
       id: t.id,
       at: t.createdAt,
-      actor: info.madeBy ?? t.ownerHandle,
+      // An unrecorded maker must not borrow the holder's name: actor stays
+      // null, so the object enters no author lane.
+      actor: info.authorRecorded ? info.madeBy : null,
       placeId: t.placeId,
       placeName: placeName(t.placeId),
       title: t.name,
       body: t.body,
       seq: info.makeSeq,
+      seqEstimated: false,
       provenance: {
         author: info.madeBy,
         recorded: info.authorRecorded,
         heldBy: info.heldBy,
         transferred: info.transferred,
         custody: info.custody,
+        custodyUncertain: info.custodyUncertain,
         namesCollide: info.namesCollide,
       },
     });

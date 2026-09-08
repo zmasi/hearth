@@ -5,6 +5,7 @@ import {
   buildChronology,
   filterChronology,
   computeCatchUp,
+  MOVEMENT_KINDS,
 } from "./trails.mjs";
 
 const DEFAULT_ORIGIN = "https://hearth-zack-s-team1.vercel.app";
@@ -113,9 +114,13 @@ function renderSidebar() {
   const placeSel = $("f-place");
   const keepRes = resSel.value, keepPlace = placeSel.value;
   resSel.textContent = "";
-  resSel.append(el("option", "", "everyone"));
+  const everyone = el("option", "", "everyone");
+  everyone.value = "";
+  resSel.append(everyone);
   placeSel.textContent = "";
-  placeSel.append(el("option", "", "all public places"));
+  const allPlaces = el("option", "", "all public places");
+  allPlaces.value = "";
+  placeSel.append(allPlaces);
 
   const actors = [...new Set(state.entries.map((e) => e.actor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   for (const h of actors) {
@@ -191,7 +196,9 @@ function entryNode(e) {
     h.addEventListener("click", () => setFilter("resident", e.actor));
     who.append(h);
     head.append(who);
-  } else {
+  } else if (e.kind !== "thing") {
+    // Events without an actor and unowned commons are the city's own acts.
+    // A thing without recorded authorship shows no maker here, not a guess.
     head.append(el("span", "who", "the city"));
   }
   if (e.placeName && e.placeId) {
@@ -202,7 +209,11 @@ function entryNode(e) {
     head.append(where);
   }
   const when = el("span", "when", `${fmtAbs(e.at)} · ${fmtRel(e.at, state.fetchedAt)}`);
-  when.title = e.seq != null ? `ledger seq ${e.seq}` : "no ledger sequence recorded";
+  when.title = e.seqAmbiguous
+    ? "ledger association ambiguous — no exact citation"
+    : e.seq != null
+      ? (e.seqEstimated ? `ledger seq ${e.seq} (estimated association)` : `ledger seq ${e.seq}`)
+      : "no ledger sequence recorded";
   head.append(when);
   art.append(head);
 
@@ -223,9 +234,9 @@ function entryNode(e) {
     if (p.heldBy && p.heldBy !== p.author) prov.append(el("span", "", `held by ${p.heldBy}`));
     if (p.transferred) {
       const steps = p.custody.map((c) => `${c.from} → ${c.to}`).join(", ");
-      prov.append(el("span", "", `custody: ${steps}`));
+      prov.append(el("span", "", p.custodyUncertain ? `custody (uncertain): ${steps}` : `custody: ${steps}`));
     }
-    if (p.namesCollide) prov.append(el("span", "", "name collides with another thing — provenance may be shared"));
+    if (p.namesCollide) prov.append(el("span", "", "name collides with another thing — authorship and custody unassignable"));
   } else if (p.author) {
     prov.append(el("span", "", `by ${p.author}`));
   } else if (p.note) {
@@ -233,7 +244,12 @@ function entryNode(e) {
   } else {
     prov.append(el("span", "", "author: not recorded"));
   }
-  if (e.seq != null) prov.append(el("span", "", `ledger seq ${e.seq}`));
+  if (e.seqAmbiguous) {
+    const possible = (e.seqCandidates || []).filter((s) => s != null);
+    prov.append(el("span", "", `ledger seq not cited — estimated association ambiguous${possible.length > 1 ? ` (possible: ${possible.join(", ")})` : ""}`));
+  } else if (e.seq != null) {
+    prov.append(el("span", "", e.seqEstimated ? `≈ ledger seq ${e.seq} · estimated association` : `ledger seq ${e.seq}`));
+  }
   const link = el("a", "permalink", "permalink");
   link.href = `#entry/${encodeURIComponent(e.id)}`;
   prov.append(link);
@@ -288,9 +304,21 @@ function applyHash() {
     const id = decodeURIComponent(h.slice(7));
     const entry = state.entries.find((e) => e.id === id);
     if (entry) {
-      // Clear filters that would hide the target, then scroll to it.
+      // Reveal the target: clear any filter that would hide it, then render
+      // and scroll. A permalink promises its target exists.
       if (state.filters.resident && entry.actor !== state.filters.resident) setFilter("resident", "");
       if (state.filters.placeId && entry.placeId !== state.filters.placeId) setFilter("placeId", "");
+      if (state.filters.query) {
+        const hay = [entry.title, entry.body, entry.actor, entry.placeName].filter(Boolean).join("\n").toLowerCase();
+        if (!hay.includes(state.filters.query.trim().toLowerCase())) {
+          state.filters.query = "";
+          $("f-query").value = "";
+        }
+      }
+      if (entry.kind === "event" && MOVEMENT_KINDS.has(entry.eventKind) && !state.filters.includeMovement) {
+        state.filters.includeMovement = true;
+        $("f-movement").checked = true;
+      }
       renderTimeline();
       requestAnimationFrame(() => {
         const node = document.getElementById(`entry-${CSS.escape(id)}`);

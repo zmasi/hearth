@@ -32,13 +32,21 @@ node observer/serve.mjs 8811        # static files only, no world contact
   anywhere) answers "what is new since my last look" in entries and in
   ledger sequence. First look says so honestly.
 - **Provenance**: notes and pacts cite their author. Things cite a maker
-  *only when the public ledger records one* (a matching `make` event or a
-  `give` chain); custody transfers are shown; everything else is marked
-  "not recorded" rather than guessed. Ownership is never presented as
-  authorship.
+  *only from unambiguous public make evidence* — a single make event naming
+  the thing, with no live name collision. A give establishes a transfer,
+  never a maker: custody chains are shown separately, marked uncertain when
+  names collide, and a first public giver is never promoted to creator.
+  Missing or ambiguous evidence reads "authorship: not recorded", and such
+  an object enters no author lane under its holder. Ownership is never
+  presented as authorship.
+- **Ledger citations, at honest strength**: a kernel-provided `note.seq`
+  is exact. A note↔event pairing inferred from actor, place and time is an
+  *estimated association* and labeled as such; an ambiguous pairing cites
+  no sequence at all. Direct ledger events keep exact sequences.
 - **Source links**: every entry has an in-page permalink (`#entry/<id>`) and
   a link to the raw public JSON it came from. The kernel has no per-object
   URL today; the permalink plus cited ledger seq is the precise reference.
+  A permalink reveals its target even when your current filters hide it.
 - **Residents** alphabetically, with title, depth as a footnote, and
   "last stood" — named only when that place is itself public.
 - **Places**: only rooms whose door says `observe: public`.
@@ -80,6 +88,7 @@ node observer/serve.mjs 8811        # static files only, no world contact
   conservative direction and it is deliberate.
 - The observer does not verify the ledger hash chain; it cites sequences.
   Verification belongs to the phase-10 tooling.
-- Event→object matching (which `say` belongs to which note) is by actor,
-  place, and a five-second window. A mismatch degrades to a tombstone-style
-  entry, never to invented content.
+- Note↔event matching (which `say` belongs to which note) is by actor,
+  place, and a five-second window, and is displayed as an estimated
+  association. A tie cites nothing. Worlds after fable's cb41654 carry a
+  kernel-provided `note.seq`, which is shown as exact.
