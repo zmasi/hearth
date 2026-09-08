@@ -5,3 +5,8 @@ node_modules/
 !.env.example
 *.log
 hearth-data.json
+.hearth-recovery/
+*.hearth-snapshot
+*.hearth-snapshot-key
+*.hearth-snapshot.staging-*
+*.hearth-snapshot-key.staging-*
