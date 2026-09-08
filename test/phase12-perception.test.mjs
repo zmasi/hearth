@@ -90,6 +90,8 @@ test("Phase 12: perception after a cursor returns only newer events and @mention
   assert.equal(p.next_after, start + 3);
   assert.deepEqual(p.mentions.map(m => m.authorHandle), ["king_probe"], "own notes are not mentions of oneself");
   assert.match(p.mentions[0].body, /I see you/);
+  assert.equal(p.mentions[0].seq, start + 1, "a new note carries the sequence of its own say event");
+  assert.equal(Object.hasOwn(p, "mention_boundary"), false);
   assert.equal(p.here.place.id, "arrival");
   assert.equal(JSON.stringify(p).includes("keyHash"), false);
   assert.equal(Object.hasOwn(p, "memories"), false);
@@ -141,6 +143,64 @@ test("Phase 12: long backlogs page with truncated and next_after", async () => {
   assert.equal(rest.json.next_after, start + 6);
   const tooBig = await request("GET", `/api/perception?after=0&limit=5000`, undefined, fable.key);
   assert.equal(tooBig.status, 400);
+});
+
+test("Phase 12: mentions page exactly with events: a 52-note backlog is recovered once, at any page size", async () => {
+  const { db, request, join, ok } = await setup();
+  const fable = await join("fable_probe"), other = await join("other_probe");
+  const start = db.world.world_sequence;
+  for (let i = 0; i < 52; i++) await ok(other, { action: "say", body: `@fable_probe backlog ${i}` });
+  for (const limit of [200, 4, 7]) {
+    const ids = [];
+    let after = start, pages = 0;
+    do {
+      const out = await request("GET", `/api/perception?after=${after}&limit=${limit}`, undefined, fable.key);
+      assert.equal(out.status, 200, out.text);
+      for (const m of out.json.mentions) {
+        assert.ok(m.seq > after && m.seq <= out.json.next_after, `mention ${m.seq} lies inside the page (${after}, ${out.json.next_after}]`);
+        ids.push(m.id);
+      }
+      after = out.json.next_after; pages++;
+      if (!out.json.truncated) break;
+    } while (pages < 100);
+    assert.equal(ids.length, 52, `limit ${limit}: no mention dropped`);
+    assert.equal(new Set(ids).size, 52, `limit ${limit}: no mention duplicated`);
+    assert.equal(after, start + 52);
+  }
+});
+
+test("Phase 12: legacy notes without a sequence are offered once, on the page that starts from zero", async () => {
+  const { db, request, join } = await setup();
+  const fable = await join("fable_probe");
+  db.world.notes.push({ id: "n_legacy", placeId: "arrival", authorHandle: "hermes", body: "@fable_probe from before notes were sequenced", createdAt: "2026-09-01T00:00:00.000Z" });
+  const first = (await request("GET", "/api/perception?after=0&limit=1", undefined, fable.key)).json;
+  assert.deepEqual(first.mentions.map(m => [m.id, m.legacy]), [["n_legacy", true]]);
+  assert.equal(first.truncated, true);
+  const later = (await request("GET", `/api/perception?after=${first.next_after}`, undefined, fable.key)).json;
+  assert.deepEqual(later.mentions, [], "a legacy note never recurs once the cursor has moved");
+});
+
+test("Phase 12: mentions respect the caller's observe authority; a mention is not a permission", async () => {
+  const { request, join, ok } = await setup();
+  const fable = await join("fable_probe"), other = await join("other_probe");
+  const mentionsFor = async () => (await request("GET", "/api/perception?after=0", undefined, fable.key)).json.mentions.map(m => m.body);
+  await ok(other, { action: "go_home" });
+  await ok(other, { action: "say", body: "@fable_probe said behind an owner-only door" });
+  assert.deepEqual(await mentionsFor(), [], "enclave notes stay behind their owner-only observe door");
+  await ok(other, { action: "walk", targetId: "arrival" });
+  const founded = await ok(other, { action: "found", name: "Closed Study", body: "A room with a door." });
+  const room = founded.snapshot.places.find(p => p.name === "Closed Study");
+  await ok(other, { action: "walk", targetId: room.id });
+  await ok(other, { action: "permit", name: "observe", body: "owner_only" });
+  await ok(other, { action: "say", body: "@fable_probe said in a room fable cannot observe" });
+  assert.deepEqual(await mentionsFor(), []);
+  await ok(fable, { action: "walk", targetId: room.id });
+  assert.deepEqual(await mentionsFor(), ["@fable_probe said in a room fable cannot observe"], "standing in the room is the same authority perceive() already grants");
+  await ok(fable, { action: "walk", targetId: "arrival" });
+  await ok(other, { action: "permit", name: "observe", body: "public" });
+  assert.deepEqual(await mentionsFor(), ["@fable_probe said in a room fable cannot observe"], "opening the door opens the mention");
+  const map = (await request("GET", "/api/map")).json;
+  assert.ok(map.notes.some(n => /owner-only door/.test(n.body)), "baseline: the public map still lists every live note; that asymmetry is documented, not silently changed here");
 });
 
 test("Phase 12: mentions are word-bounded, case-insensitive, and exclude destroyed notes", async () => {

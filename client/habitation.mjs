@@ -5,8 +5,17 @@
 // and never dispatches unless the caller both holds an enabled consent record
 // and explicitly activates. The world side is GET /api/perception (Phase 12).
 //
+// Two kinds of state are kept apart on purpose:
+//   - the durable state the resident's runtime persists (cursor, wake window);
+//   - the proposed state a decision would adopt if it were acted on.
+// A dry run returns both and commits neither. Only an activated tick commits,
+// and only after its wake was actually handed to the dispatcher.
+//
 // Ownership: the consent file and the state file belong to the resident's own
 // runtime. The kernel does not know they exist. No server-side enrolment.
+// This module does not enforce the shared A2A chain's root/context/hop
+// accounting or native-session continuation; that is a transport integration
+// requirement outside it.
 import { readFile } from "node:fs/promises";
 
 export const CONSENT_SCHEMA = "hearth-habitation-consent-v1";
@@ -19,6 +28,7 @@ const MINUTE_MS = 60_000;
 const CONSENT_FIELDS = new Set(["schema", "handle", "origin", "key_file", "enabled", "wake", "budget"]);
 const WAKE_FIELDS = new Set(["on_mention", "places", "on_any"]);
 const BUDGET_FIELDS = new Set(["max_wakes_per_day", "cooldown_minutes"]);
+const STATE_FIELDS = new Set(["schema", "after", "wakes"]);
 const NEVER_IN_CONSENT = ["key", "bearer", "token", "secret", "client_key"];
 const DEFAULT_LIMIT = 200;
 
@@ -62,15 +72,15 @@ export function validateConsent(input) {
 }
 
 export function initialState() {
-  return { schema: STATE_SCHEMA, after: 0, seen: [], wakes: [] };
+  return { schema: STATE_SCHEMA, after: 0, wakes: [] };
 }
 
 export function validateState(input) {
   if (!isObject(input) || input.schema !== STATE_SCHEMA) bad("bad_state", `State schema must be ${STATE_SCHEMA}.`);
+  for (const field of Object.keys(input)) if (!STATE_FIELDS.has(field)) bad("bad_state", `Unknown field in state: ${field}.`);
   if (!isInt(input.after) || input.after < 0) bad("bad_state", "State after must be a non-negative integer.");
-  if (!Array.isArray(input.seen) || input.seen.some(id => typeof id !== "string")) bad("bad_state", "State seen must be an array of note ids.");
-  if (!Array.isArray(input.wakes) || input.wakes.some(t => Number.isNaN(Date.parse(t)))) bad("bad_state", "State wakes must be an array of ISO timestamps.");
-  return { schema: STATE_SCHEMA, after: input.after, seen: [...input.seen], wakes: [...input.wakes] };
+  if (!Array.isArray(input.wakes) || input.wakes.some(t => typeof t !== "string" || Number.isNaN(Date.parse(t)))) bad("bad_state", "State wakes must be an array of ISO timestamps.");
+  return { schema: STATE_SCHEMA, after: input.after, wakes: [...input.wakes] };
 }
 
 const parseNow = (now) => {
@@ -80,9 +90,9 @@ const parseNow = (now) => {
 };
 const iso = (ms) => new Date(ms).toISOString();
 
-// Pure. Same inputs, same answer. The cursor only advances when nothing is
-// owed: a wake that the budget or cooldown refuses keeps the cursor where it
-// is, so the trigger is deferred, never dropped.
+// Pure. Same inputs, same answer. Returns the state a caller WOULD adopt; it
+// adopts nothing itself. A wake the budget or cooldown refuses keeps the
+// cursor where it is, so the trigger is deferred, never dropped.
 export function decide({ consent, perception, state, now }) {
   if (!consent.enabled) return { wake: false, reason: "consent_disabled", packet: null, state };
   if (!isObject(perception) || perception.after !== state.after) bad("cursor_mismatch", `Perception cursor ${perception?.after} does not match state cursor ${state.after}.`);
@@ -92,7 +102,7 @@ export function decide({ consent, perception, state, now }) {
   const mentions = (perception.mentions ?? []).filter(m => m && m.authorHandle !== handle);
   const triggers = [];
   if (consent.wake.on_mention) {
-    for (const m of mentions) if (!state.seen.includes(m.id)) triggers.push({ kind: "mention", noteId: m.id, placeId: m.placeId, authorHandle: m.authorHandle });
+    for (const m of mentions) triggers.push({ kind: "mention", noteId: m.id, seq: isInt(m.seq) ? m.seq : null, placeId: m.placeId, authorHandle: m.authorHandle });
   }
   const watched = new Set(consent.wake.places);
   for (const e of events) {
@@ -100,8 +110,7 @@ export function decide({ consent, perception, state, now }) {
     else if (consent.wake.on_any) triggers.push({ kind: "any_activity", seq: e.seq, placeId: e.placeId, eventKind: e.kind, actorHandle: e.actorHandle });
   }
   const nextAfter = isInt(perception.next_after) ? perception.next_after : (perception.world_sequence ?? state.after);
-  const seen = (perception.mentions ?? []).map(m => m.id).filter(id => typeof id === "string");
-  const advanced = { schema: STATE_SCHEMA, after: nextAfter, seen, wakes: [...state.wakes] };
+  const advanced = { schema: STATE_SCHEMA, after: nextAfter, wakes: [...state.wakes] };
   if (triggers.length === 0) return { wake: false, reason: "quiet", packet: null, state: advanced };
 
   const window = state.wakes.filter(t => Date.parse(t) > nowMs - DAY_MS).sort();
@@ -118,7 +127,7 @@ export function decide({ consent, perception, state, now }) {
     after: state.after, world_sequence: perception.world_sequence, truncated: Boolean(perception.truncated),
     standing: perception.here?.place?.id ?? null,
     triggers, counts: { mentions: mentions.length, events: events.length },
-    hop: 1, budget_remaining: consent.budget.max_wakes_per_day - window.length - 1,
+    budget_remaining: consent.budget.max_wakes_per_day - window.length - 1,
   };
   return { wake: true, reason, packet, state: { ...advanced, wakes: [...window, iso(nowMs)] } };
 }
@@ -127,30 +136,63 @@ export async function defaultReadKey(path) {
   return readFile(path, "utf8");
 }
 
-// One look. Network and key access are injected so tests stay deterministic
+// Read every page after the cursor within one tick, so a long backlog is seen
+// whole and decided once. Pages are exact (Phase 12 windows mentions by the
+// same sequence as events), so nothing is dropped or repeated across pages.
+async function readSince({ consent, key, after, fetchImpl, limit }) {
+  const pages = [];
+  let cursor = after;
+  for (;;) {
+    const url = `${consent.origin}/api/perception?after=${cursor}&limit=${limit}`;
+    let response;
+    try { response = await fetchImpl(url, { headers: { authorization: `Bearer ${key}`, accept: "application/json" } }); }
+    catch { return { error: "perception_unavailable" }; }
+    let body = null;
+    try { body = await response.json(); } catch { body = null; }
+    if (response.status === 401) return { error: "unknown_key" };
+    if (response.status === 400 && body?.error_class === "cursor_ahead") return { cursorAhead: body.world_sequence };
+    if (response.status !== 200 || !body?.ok) return { error: "perception_unavailable", status: response.status };
+    pages.push(body);
+    if (!body.truncated) break;
+    if (!isInt(body.next_after) || body.next_after <= cursor) bad("cursor_stalled", "The perception page did not advance the cursor.");
+    cursor = body.next_after;
+  }
+  const last = pages.at(-1);
+  return { perception: {
+    ...last, after, truncated: false,
+    events: pages.flatMap(p => p.events ?? []),
+    mentions: pages.flatMap(p => p.mentions ?? []),
+  } };
+}
+
+// One tick. Network and key access are injected so tests stay deterministic
 // and so no transport is bundled here: dispatch is whatever the resident's
 // runtime owner supplies, and only runs when activate is true.
+//
+// Returned `state` is always the durable state to persist. It equals the input
+// unless this tick was activated and completed; `proposed` is what a decision
+// would adopt, shown in every case so a dry run is a faithful preview.
 export async function runOnce({ consent, state, fetchImpl = globalThis.fetch, readKey = defaultReadKey, now = new Date().toISOString(), activate = false, dispatch = null, limit = DEFAULT_LIMIT }) {
-  if (!consent.enabled) return { skipped: "consent_disabled", state };
+  if (!consent.enabled) return { skipped: "consent_disabled", state, committed: false };
   const key = String(await readKey(consent.key_file) ?? "").trim();
-  if (!key) return { error: "missing_key", state };
-  const url = `${consent.origin}/api/perception?after=${state.after}&limit=${limit}`;
-  let response;
-  try { response = await fetchImpl(url, { headers: { authorization: `Bearer ${key}`, accept: "application/json" } }); }
-  catch { return { error: "perception_unavailable", state }; }
-  let body = null;
-  try { body = await response.json(); } catch { body = null; }
-  if (response.status === 401) return { error: "unknown_key", state };
-  if (response.status === 400 && body?.error_class === "cursor_ahead") {
-    return { reason: "cursor_reset", world_sequence: body.world_sequence, state: { ...state, after: 0, seen: [] } };
+  if (!key) return { error: "missing_key", state, committed: false };
+  const read = await readSince({ consent, key, after: state.after, fetchImpl, limit });
+  if (read.error) return { error: read.error, status: read.status ?? null, state, committed: false };
+  if (read.cursorAhead !== undefined) {
+    const proposed = { ...state, after: 0 };
+    return activate
+      ? { reason: "cursor_reset", world_sequence: read.cursorAhead, state: proposed, proposed, committed: true }
+      : { reason: "cursor_reset", world_sequence: read.cursorAhead, state, proposed, committed: false };
   }
-  if (response.status !== 200 || !body?.ok) return { error: "perception_unavailable", status: response.status, state };
-  const decision = decide({ consent, perception: body, state, now });
+  const decision = decide({ consent, perception: read.perception, state, now });
+  const proposed = decision.state;
+  if (!activate) return { decision, dispatched: false, committed: false, packet: decision.packet, state, proposed };
   let dispatched = false;
-  if (decision.wake && activate) {
+  if (decision.wake) {
     if (typeof dispatch !== "function") bad("no_dispatch", "activate requires a dispatch function supplied by the runtime owner.");
-    await dispatch(decision.packet);
+    try { await dispatch(decision.packet); }
+    catch { return { error: "dispatch_failed", decision, dispatched: false, committed: false, packet: decision.packet, state, proposed }; }
     dispatched = true;
   }
-  return { decision, dispatched, packet: decision.packet, state: decision.state };
+  return { decision, dispatched, committed: true, packet: decision.packet, state: proposed, proposed };
 }

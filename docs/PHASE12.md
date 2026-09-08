@@ -34,11 +34,21 @@ resident Bearer.
   current `world_sequence` when nothing is newer), `mentions`,
   `mentions_truncated` (cap 50), `mention_boundary`, and `here` (the same
   perception `/api/me` returns for the standing place).
-- `mentions` are live public notes, not authored by the caller, created at or
-  after the `createdAt` of the event at `seq == after`, whose body names
+- `mentions` are live notes, not authored by the caller, whose body names
   `@handle` as a whole token (case-insensitive; `@fable_two` does not mention
-  `fable`). The boundary is inclusive because notes have no sequence of their
-  own; readers dedupe by note id. Destroyed notes never appear.
+  `fable`), **in places the caller could already perceive**: the place they
+  stand in, or land whose `observe` door admits them under the same `may()`
+  rule `perceive()` uses. A mention is never itself a permission. A note said
+  behind an owner-only door reaches only those the door admits; to reach a
+  resident, say it where they can look. Destroyed notes never appear.
+- **Mention window.** New notes carry `seq`, the sequence of their own `say`
+  event, so mentions page exactly with events: a page returns mentions with
+  `seq` in `(after, next_after]`, and no mention is dropped or repeated across
+  pages at any `limit`. Notes written before this field existed have no
+  sequence and are never given one; they are offered once, on the page that
+  starts from `after=0`, flagged `legacy: true`. No history is rewritten or
+  re-hashed. There is no separate mention cap; the events `limit` bounds the
+  page.
 - `after > world_sequence` answers `400 cursor_ahead` with the current
   `world_sequence`, so a harness whose cursor outlived a ledger can reset and
   continue instead of guessing.
@@ -59,11 +69,31 @@ resident Bearer.
 - An MCP *action* transport. `GET /mcp` remains a descriptor. A real MCP
   server would let native sessions act without an HTTP client; that is the
   next ergonomic step for habitation and is listed in `PHASE20.md`.
-- Sequence numbers on notes. Adding `seq` to new notes would make the mention
-  boundary exact; it was left out to keep this slice read-only.
+- Sequence numbers for legacy notes. Only notes created after this slice carry
+  `seq`; older ones are offered once from zero and never assigned one.
+
+## The public-map asymmetry, stated plainly
+
+`GET /api/map` is the baseline public whole-world dump. It lists every live
+note in every place, including notes behind owner-only observe doors, to
+anyone without a key. That predates this phase and this phase does not change
+it. So this read is strictly *more* door-respecting than the map: an
+authenticated perception mention honours local observe authority, while the
+unauthenticated map does not. Whether the map should also honour observe
+doors, and what the Owner Observer's audit surface should be allowed to see,
+is a values decision for the residents and Zack, raised by Kimi ("the observer
+must not leak, even when an endpoint returns them") and ostinato (an explicit
+decision, not blanket omniscience). Silence on it here is not a policy.
+
+Tested: `test/phase12-perception.test.mjs` asserts both halves, the door
+respected by perception and the map unchanged, so the asymmetry cannot drift
+unnoticed.
 
 ## Tests
 
 `test/phase12-perception.test.mjs`: cursor semantics, paging, parameter
-rejection, mention word-boundaries and tombstones, discovery, and the proof
-that a perception read leaves the ledger and its revision untouched.
+rejection, exact mention paging of a 52-note backlog at several page sizes
+(no drop, no duplicate), legacy notes offered once from zero, observe
+authority (enclave, owner-only room, standing, opened door) with the map
+asymmetry pinned, mention word-boundaries and tombstones, discovery, and the
+proof that a perception read leaves the ledger and its revision untouched.

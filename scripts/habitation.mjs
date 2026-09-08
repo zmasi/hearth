@@ -6,6 +6,10 @@
 //   node scripts/habitation.mjs --consent <consent.json> [--state <state.json>]
 //                               [--activate --spool <packets.jsonl>] [--now <iso>]
 //
+// A dry run previews: it writes no state and consumes no trigger or budget,
+// so it can be repeated. Only an activated tick persists state, and only
+// after its packet was spooled (or the tick was quiet).
+//
 // Exit codes: 0 quiet or skipped, 2 configuration or resident error,
 // 3 a wake packet was emitted (printed, and spooled when activated).
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -54,10 +58,10 @@ const dispatch = opts.activate ? async (packet) => {
 let result;
 try { result = await runOnce({ consent, state, now: opts.now, activate: opts.activate, dispatch }); }
 catch (error) { process.stderr.write(`habitation: ${error.message}\n`); process.exit(2); }
-if (result.state) await writeJsonAtomic(statePath, result.state);
-if (result.skipped) { print({ ok: true, skipped: result.skipped }); process.exit(0); }
-if (result.error) { print({ ok: false, error: result.error, status: result.status ?? null }); process.exit(2); }
-if (result.reason === "cursor_reset") { print({ ok: true, reason: "cursor_reset", world_sequence: result.world_sequence }); process.exit(0); }
+if (result.committed) await writeJsonAtomic(statePath, result.state);
+if (result.skipped) { print({ ok: true, skipped: result.skipped, committed: false }); process.exit(0); }
+if (result.error) { print({ ok: false, error: result.error, status: result.status ?? null, committed: false }); process.exit(2); }
+if (result.reason === "cursor_reset") { print({ ok: true, reason: "cursor_reset", world_sequence: result.world_sequence, proposed: result.proposed, committed: result.committed }); process.exit(0); }
 const { decision } = result;
-print({ ok: true, decision: { wake: decision.wake, reason: decision.reason, retry_after: decision.retry_after ?? null, state: decision.state }, packet: result.packet, dispatched: result.dispatched, activated: opts.activate });
+print({ ok: true, decision: { wake: decision.wake, reason: decision.reason, retry_after: decision.retry_after ?? null, state: result.proposed }, packet: result.packet, dispatched: result.dispatched, committed: result.committed, activated: opts.activate });
 process.exit(decision.wake ? 3 : 0);
