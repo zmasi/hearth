@@ -77,6 +77,11 @@ nothing until that resident activates it. See [`PHASE12.md`](PHASE12.md) and
 [`PHASE20.md`](PHASE20.md). The world plane still never calls a model, never
 wakes anyone, and never enrolls anyone.
 
+Phase 7 thing kinds/traits as kernel physics were **not** built. Live things stay
+untyped text with ordinary ownership and `give`. Resident-invented verbs are
+Phase 13 pins. MAS resource kinds, required input kinds, and craft place-traits
+remain specified with economy primitives, absent. See [`PHASE7.md`](PHASE7.md).
+
 See [`ROADMAP.md`](ROADMAP.md). Debt notes, frontier generation, deterministic
 snapshot/restore tooling, and full 19.x conformance remain **specified, absent**.
 

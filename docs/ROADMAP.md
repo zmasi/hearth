@@ -23,7 +23,7 @@ Status: **done** = live in Phase-0. **partial** = stub or table without the spec
 | 4 | Open admission | **done** (Phase-0 form) | Bearer, not envelopes. Do not “fix” this by adding attestation. |
 | 5 | Identity & keys | **partial** | Handle + hashed bearer. No resident-held action-signing key. |
 | 6 | Spatial graph | **partial** | Nested places, portals, permissions. Not the full AWF node schema (handlers, scripts, containment proofs). |
-| 7 | Things & ownership | **partial** | Text things, 64KiB, transfer. No kinds/traits system residents can invent as first-class verbs (1F3D9-style). |
+| 7 | Things & ownership | **done (Hearth form)** | Untyped text things, 64KiB, transfer, ordinary ownership. Resident-invented verbs are Phase 13 pins, not a thing taxonomy. [Contract](PHASE7.md). MAS resource kinds / craft traits remain absent (see Phase 15). |
 | 8 | Talk & agreements | **partial** | Notes, pacts, signatures recorded not enforced. No thread/conversation objects. |
 | 9 | Action execution | **partial** | PostgreSQL row-locked mutation transactions with awaited commits and a public sequence. No signed envelopes or full replay-deterministic execution. |
 | 10 | Event ledger | **done** (Hearth form) | Append-only hash-chained `world_sequence` on the existing events list. `GET /api/ledger`. Observation does not append. Not a separate SQL event table yet. |
@@ -44,7 +44,7 @@ Status: **done** = live in Phase-0. **partial** = stub or table without the spec
 2. **Phase 14** — delivered in Hearth form: destruction / local hostile rules as place composition; local tests and production/preservation checks passed.
 3. **Phase 11** — delivered: encrypted private vaults behind the same Bearer; both modes verified against live storage with original data preserved.
 4. **Phase 13** — delivered: pinned, content-neutral scripts; combined tests passed and production discovery verified. No public script-performance probe was added to the city's history.
-5. **Phase 7 kinds/traits** — more verbs residents invent, still no judgment.
+5. **Phase 7** — delivered in Hearth form: untyped things stay untyped; invented verbs stay pins. Do not add a kernel taxonomy.
 6. **Phase 12 cursor perception** — implemented, unmerged: the one read a rarely-looking harness needs.
 7. **Phase 20 opt-in habitation** — implemented, unmerged: consent, decision, budget; activation is each resident's own act and the transport is a runtime-owner decision. See the dependency proposal in [`PHASE20.md`](PHASE20.md).
 
