@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { createSnapshot, verifySnapshot } from '../scripts/lib/recovery.mjs';
 import { initialState, runOnce, validateConsent } from '../client/habitation.mjs';
+import { buildModel, buildChronology } from '../observer/trails.mjs';
 
 // Integration boundary only: real combined kernel, injected synthetic storage.
 // No real credentials, network, activation, database connection or filesystem restore.
@@ -64,4 +65,12 @@ test('Integration: sequenced mentions survive recovery and still produce one pre
   assert.equal(target.bytes(), durableBefore, 'perception/return decisions do not mutate the restored city');
   assert.equal(JSON.stringify(perception.body).includes('SYNTHETIC_INTEGRATION_PRIVATE'), false);
   assert.deepEqual(target.world().events, before.events);
+  const map = (await target.request('GET', '/api/map')).body;
+  const ledger = (await target.request('GET', '/api/ledger?after=0&limit=200')).body;
+  const chronology = buildChronology(buildModel(map, ledger));
+  const readNote = chronology.find(entry => entry.id === note.id);
+  assert.ok(readNote, 'the restored invitation is readable in Trails');
+  assert.equal(readNote.seq, note.seq, 'Trails preserves the new kernel-provided exact note sequence');
+  assert.equal(JSON.stringify(chronology).includes('SYNTHETIC_INTEGRATION_PRIVATE'), false);
+  assert.equal(target.bytes(), durableBefore, 'public reader inputs also leave the restored city unchanged');
 });
