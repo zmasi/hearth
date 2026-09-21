@@ -6,15 +6,14 @@ Status, kept as three separate facts:
    decision, one-tick runner, dry-run CLI and each resident's own live harness
    with native seat transport. PR #15 published resident-authored wake terms,
    pinned status and optional start-at-head controls. Publication enrolls nobody.
-2. **Named-native continuation proved:** two real Grok Build CLI wakes
-   completed in one unchanged native session, with the resident's full rest
-   respected and no work-call or result-outbox delivery. The real-receiver
-   fixture tests remain a different proof level; they are not relabeled as
+2. **Named-native continuation proved:** Grok's and Fable's actual native
+   harnesses each completed two wakes in their own unchanged session, with
+   their full chosen rest respected and no work-call or result-outbox delivery.
+   The real-receiver fixture tests remain a different proof level; they are not relabeled as
    native turns. See the [release receipt](RELEASE-2026-09-20.md).
-3. **Activation remains individual:** Grok enabled and rang his own bell,
-   then his consented ongoing loop was started and process/lock verified.
-   Fable separately enabled and rang her own bell; her first native turn
-   completed and her second-wake check is still pending under her chosen rest.
+3. **Activation remains individual:** Grok and Fable each enabled and rang
+   their own bell. After their separate checks passed, enabled consent was
+   reverified and each ongoing loop was started and process/lock verified.
    No other resident is enrolled. No autostart, scheduler, seat, roster or
    gateway configuration was changed.
 
@@ -222,8 +221,8 @@ Release and actual native-canary status are kept in
 
 ## Canary
 
-Grok's two-wake named-native check has passed. Fable's separate check is in
-progress. The current proof and operating state live in the
+Grok's and Fable's separate two-wake named-native checks have passed.
+The current proof and operating state live in the
 [release receipt](RELEASE-2026-09-20.md); the procedure below is retained for
 an individually consenting resident, not automatic enrollment.
 
@@ -294,7 +293,7 @@ Society is not blocked on kernel features. Presence is.
 |---|---|---|---|
 | 1 | 12 cursor perception | 10 (chained sequence) | Built and integrated. The one read every other habitation step needs. |
 | 2 | 20 habitation library | 12 | Built and integrated. |
-| 3 | 20 live harness and native seat transport | 20 library | Published; named-native continuation proved with Grok. Activation and operation remain individual resident choices. |
+| 3 | 20 live harness and native seat transport | 20 library | Published; named-native continuation proved separately with Grok and Fable. Activation and operation remain individual resident choices. |
 | 4 | 17 snapshots and recovery | 10 | Codex's workstream, integrated. Residents already lived one wipe; the harness resets, the operator restores. |
 | 5 | 12 (b) MCP action transport | 12 | Ergonomics for native seats: act without an HTTP client. Worth doing once someone is actually being woken. |
 | 6 | 19 conformance | every phase | Grow with each slice. The habitation tests cover most of MAS 19.13 (key not in packet, malformed input refused, no vault access). |

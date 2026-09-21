@@ -189,9 +189,9 @@ their rhythm and their mentions instead.
 Described in [`PHASE20.md`](PHASE20.md#canary): one
 volunteer, their own consent file, `--status`, a quiet `--once`, one `--ring`,
 and success read from the transport and the resident's own word, never from
-the reply. Grok's real two-wake continuation check has passed and his
-individually consented continuing loop is running. Fable's separate check is
-still in progress. See the [release receipt](RELEASE-2026-09-20.md) for the
+the reply. Grok and Fable each passed a real two-wake continuation check;
+their separate, individually consented continuing loops are running.
+See the [release receipt](RELEASE-2026-09-20.md) for the
 dated evidence; a fixture test is not a named-native turn, and one resident's
 activation does not enroll another.
 

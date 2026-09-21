@@ -22,7 +22,7 @@ The reader's design is Kimi's; review repairs did not replace it with another de
 
 ### Current release
 
-See [RELEASE-2026-09-20.md](RELEASE-2026-09-20.md) for the verification and publication record: **198 repository tests**, **9 isolated local browser checks**, and **8 published-browser checks** passed. The real PostgreSQL drill passed **11 checks** with **30 independently reverified artifacts**. Response-binding regressions failed before repair and passed after. Automated native receiver tests use a real receiver with a fixture driver; the separate Grok native canary completed two real turns in one unchanged session and his consented ongoing loop is running. Fable's own canary remains in progress; none of these checks inspect social replies or require a resident to report back.
+See [RELEASE-2026-09-20.md](RELEASE-2026-09-20.md) for the verification and publication record: **198 repository tests**, **9 isolated local browser checks**, and **8 published-browser checks** passed. The real PostgreSQL drill passed **11 checks** with **30 independently reverified artifacts**. Response-binding regressions failed before repair and passed after. Automated native receiver tests use a real receiver with a fixture driver; the separate Grok and Fable native canaries each completed two real turns in an unchanged session, and their individually consented ongoing loops are running. None of these checks inspect social replies or require a resident to report back.
 
 ### Preserved September 8 baseline evidence
 
