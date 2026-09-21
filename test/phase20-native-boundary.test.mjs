@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +22,16 @@ import { fileURLToPath } from "node:url";
 //
 // The adapter checkout is only read (bytecode writes are disabled and all state
 // goes to a temp directory). Set HEARTH_A2A_ADAPTER_ROOT to point elsewhere.
-// Without the checkout or Python the test is skipped, and says so.
+// Without the checkout or a real Python interpreter the test is skipped, and
+// says so. HEARTH_TEST_PYTHON may name an interpreter directly.
+//
+// The receiver child is started from the REAL interpreter, resolved once, never
+// from whatever `python` is on PATH. On Windows that name can be the Python
+// install manager's shim, and the shim, run without LOCALAPPDATA (which the
+// child's deliberately sparse environment lacks), downloads and installs an
+// entire runtime into ./Python of its working directory: some 2,700 files,
+// fetched over the network, and not the machine's validated interpreter. An
+// earlier revision of this test did exactly that on every run.
 
 import { CONSENT_SCHEMA, initialState, validateConsent, validateState } from "../client/habitation.mjs";
 import { admitWake, seatCapability } from "../client/habitation-seat.mjs";
@@ -32,8 +41,25 @@ import { nativeTick } from "../client/habitation-visit.mjs";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const adapterRoot = process.env.HEARTH_A2A_ADAPTER_ROOT ?? "C:/Dev/a2a-cli-adapter";
 const python = process.env.HEARTH_TEST_PYTHON ?? "python";
-const unavailable = !existsSync(join(adapterRoot, "adapter_core.py")) ? `no a2a-cli-adapter checkout at ${adapterRoot}`
-  : spawnSync(python, ["--version"], { stdio: "ignore" }).status !== 0 ? `no usable ${python} on PATH` : null;
+
+// Ask `python` for its real executable, from a scratch directory that is removed
+// afterwards, so even a bootstrapping shim can litter nothing that survives. An
+// interpreter that only exists inside that scratch directory is a bootstrap, not
+// an installed Python, and is refused.
+function resolveInterpreter() {
+  const scratch = mkdtempSync(join(tmpdir(), "hearth-python-probe-"));
+  try {
+    const probe = spawnSync(python, ["-c", "import sys; print(sys.executable)"], { cwd: scratch, encoding: "utf8" });
+    const found = probe.status === 0 ? String(probe.stdout).trim().split(/\r?\n/).at(-1) : "";
+    if (!found || !existsSync(found)) return { reason: `no usable ${python} on PATH` };
+    if (found.toLowerCase().startsWith(scratch.toLowerCase())) return { reason: `${python} is a bootstrapping shim in this environment; set HEARTH_TEST_PYTHON to a real interpreter` };
+    return { interpreter: found };
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+}
+const adapterPresent = existsSync(join(adapterRoot, "adapter_core.py"));
+const resolved = adapterPresent ? resolveInterpreter() : {};
+const interpreter = resolved.interpreter ?? null;
+const unavailable = !adapterPresent ? `no a2a-cli-adapter checkout at ${adapterRoot}` : resolved.reason ?? null;
 
 const allowed = new Set(["PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "SYSTEMDRIVE"]);
 const cleanEnv = (extra = {}) => Object.assign(Object.fromEntries(Object.entries(process.env).filter(([k]) => allowed.has(k.toUpperCase()))), extra);
@@ -60,7 +86,7 @@ test("boundary: a resident's own harness rings the REAL receiver: plain message,
   const dir = await mkdtemp(join(tmpdir(), "hearth-native-boundary-"));
   const seatState = join(dir, "seat-state"), record = join(dir, "driver-record.jsonl"), hold = record + ".hold";
   await writeFile(hold, "held");
-  const receiver = startJsonChild(python, [join(root, "test-support", "real_adapter_seat.py"), adapterRoot, seatState, record],
+  const receiver = startJsonChild(interpreter, [join(root, "test-support", "real_adapter_seat.py"), adapterRoot, seatState, record],
     { cwd: dir, env: cleanEnv({ PYTHONDONTWRITEBYTECODE: "1", PYTHONUNBUFFERED: "1" }) });
   const kernel = startJsonChild(process.execPath, ["scripts/serve.mjs"], { cwd: root, env: cleanEnv({ PORT: "0", HOST: "127.0.0.1", HEARTH_DATA: join(dir, "world.json") }) });
   t.after(async () => { await stop(receiver.child); await stop(kernel.child); await rm(dir, { recursive: true, force: true }); });
