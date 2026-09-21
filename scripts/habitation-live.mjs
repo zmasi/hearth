@@ -3,14 +3,17 @@
 //
 // It looks at the city on the resident's own rules and, when those rules say
 // so, rings the resident's OWN native seat with a task-free wake. It joins no
-// work chain, waits on no visit, and reads no reply. Disabled unless the
-// resident's own consent file says enabled:true and names a loopback seat.
+// work chain and waits on no visit. The seat's RPC answers are parsed for a
+// task id and a transport state; the native reply inside them is not retained,
+// logged or forwarded. Disabled unless the resident's own consent file says
+// enabled:true and names a loopback seat.
 //
 //   node scripts/habitation-live.mjs --consent <consent.json> [--state <state.json>]
 //        [--interval-seconds <n>]     stay alive and tick (default 300, minimum 5)
 //        [--once]                     one tick, then exit
-//        [--ring]                     the resident's own hand on the bell: no message, ever
+//        [--ring]                     the resident's own hand on the bell, and only theirs: no message, ever
 //        [--status]                   show the durable state; touches no network
+//        [--start-at-head]            optional, brand-new bells only: begin at the city's live head
 //        [--release-visit]            explicitly end a visit the transport never resolved
 //        [--now <iso>]                fixed clock for a single tick (tests)
 //
@@ -19,12 +22,18 @@
 // Nothing printed ever contains the resident's key, a seat token, or a reply.
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { HabitationError, initialState, validateConsent, validateState } from "../client/habitation.mjs";
+import { HabitationError, defaultReadKey, initialState, readPerception, validateConsent, validateState } from "../client/habitation.mjs";
 import { runLive } from "../client/habitation-live.mjs";
 import { acquireLock, clearRing, readJsonIfExists, readRing, requestRing, writeJsonDurable } from "../client/habitation-store.mjs";
 import { releaseVisit } from "../client/habitation-visit.mjs";
 
-const FLAGS = new Set(["--once", "--ring", "--status", "--release-visit"]);
+const FLAGS = new Set(["--once", "--ring", "--status", "--release-visit", "--start-at-head"]);
+// The Phase 12 contract answers a cursor ahead of the ledger with 400
+// cursor_ahead and the current world_sequence, "so a harness whose cursor
+// outlived a ledger can reset". Asking from the largest cursor the kernel
+// accepts is therefore the documented way to learn the head: authenticated,
+// carrying no events, and validated by the same reader every tick uses.
+const HEAD_PROBE_CURSOR = 999_999_999;
 const VALUES = new Set(["--consent", "--state", "--interval-seconds", "--now"]);
 function parse(argv) {
   const out = {};
@@ -35,7 +44,7 @@ function parse(argv) {
     else return { error: `Unknown argument: ${a}. A ring carries no message, and neither does anything else here.` };
   }
   if (!out.consent) return { error: "--consent <path> is required." };
-  const modes = ["once", "ring", "status", "release-visit"].filter(m => out[m]);
+  const modes = ["once", "ring", "status", "release-visit", "start-at-head"].filter(m => out[m]);
   if (modes.length > 1) return { error: `Choose one of --${modes.join(", --")}.` };
   const seconds = out["interval-seconds"] === undefined ? 300 : Number(out["interval-seconds"]);
   if (!Number.isFinite(seconds) || seconds < 5) return { error: "--interval-seconds must be a number of at least 5." };
@@ -57,8 +66,11 @@ async function main(opts) {
   };
   const loadState = async () => { const found = await readJsonIfExists(statePath); return found === null ? initialState() : validateState(found); };
   const persist = (next) => writeJsonDurable(statePath, validateState(next)); // a state we would refuse to read is never written
+  // The binding is what an unresolved visit is pinned to (resident, city, seat,
+  // pinned name, continuity). Showing it is how a visit_binding_changed hold is understood.
   const visitSummary = (v) => v ? { id: v.id, phase: v.phase, native_state: v.native_state, context_id: v.context_id, task_id: v.task_id,
-    created_at: v.created_at, accepted_at: v.accepted_at, observed_at: v.observed_at, ended_at: v.ended_at, attempts: v.attempts } : null;
+    created_at: v.created_at, accepted_at: v.accepted_at, observed_at: v.observed_at, ended_at: v.ended_at, attempts: v.attempts,
+    ...(v.binding ? { binding: v.binding } : {}) } : null;
   const tickLine = (result) => ({ ok: result.outcome !== "error", outcome: result.outcome, reason: result.reason ?? null, retry_after: result.retry_after ?? null,
     native_state: result.ended?.native_state ?? null, visit: visitSummary(result.state?.visit), ...(result.message ? { message: result.message } : {}) });
   const now = () => opts.now ?? new Date().toISOString();
@@ -69,10 +81,31 @@ async function main(opts) {
   if (opts.status) {
     const consent = await loadConsent(), state = await loadState(), dayAgo = Date.now() - 86_400_000;
     print({ ok: true, handle: consent.handle, enabled: consent.enabled, origin: consent.origin,
-      seat: consent.seat ? { url: consent.seat.url, continuity: consent.seat.continuity, token_file: Boolean(consent.seat.token_file) } : null,
+      seat: consent.seat ? { url: consent.seat.url, expect_name: consent.seat.expect_name, continuity: consent.seat.continuity, token_file: Boolean(consent.seat.token_file) } : null,
       wake: consent.wake, budget: consent.budget, after: state.after, wakes_in_last_day: state.wakes.filter(t => Date.parse(t) > dayAgo).length,
       last_wake_at: state.last_wake_at ?? null, visit: visitSummary(state.visit), carried: (state.carry ?? []).length,
       ring_waiting: (await readRing(ringPath).catch(() => null)) !== null });
+    return 0;
+  }
+  if (opts["start-at-head"]) {
+    // Optional, and only for a bell that has never existed. A doorbell fitted
+    // today should not ring for everyone who called last month. Without this,
+    // a first tick simply starts from the beginning of the ledger, as before.
+    // It never touches a state that already exists: history and an unresolved
+    // visit are not its to reset. Like every mode but --status, it reads
+    // nothing while consent is off.
+    const consent = await loadConsent();
+    if (!consent.enabled || !consent.seat) throw new HabitationError("start_refused", "This consent is switched off or names no seat. Nothing was read and nothing was written.");
+    const head = await withLock(async () => {
+      if ((await readJsonIfExists(statePath)) !== null) throw new HabitationError("state_exists", `A habitation state already exists at ${statePath}. Starting at the head would discard its history or an unresolved visit, so nothing was changed.`);
+      const key = String(await defaultReadKey(consent.key_file) ?? "").trim();
+      if (!key) throw new HabitationError("missing_key", "missing_key: the resident's key file is empty.");
+      const read = await readPerception({ consent, key, after: HEAD_PROBE_CURSOR, fetchImpl: globalThis.fetch });
+      if (read.cursorAhead === undefined) throw new HabitationError(read.error ?? "head_unavailable", `${read.error ?? "head_unavailable"}: the city did not report its head${read.status ? ` (HTTP ${read.status})` : ""}. Nothing was written.`);
+      await persist({ ...initialState(), after: read.cursorAhead });
+      return read.cursorAhead;
+    });
+    print({ ok: true, started_at_head: head });
     return 0;
   }
   if (opts["release-visit"]) {

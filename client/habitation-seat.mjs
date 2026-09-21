@@ -24,7 +24,10 @@
 //       task's reply is never published to the work ledger.
 //
 // What this module keeps from the seat's answers: a task id and a transport
-// state. Never the reply. The harness does not read, store, log or forward it.
+// state. Said literally: the seat's RPC answer is parsed, and once a turn has
+// ended that answer contains the native reply. The reply is taken from it
+// nowhere. It is not retained, logged or forwarded, and only the two transport
+// fields leave these functions.
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { HabitationError, validTrigger } from "./habitation.mjs";
@@ -47,14 +50,22 @@ export const WAKE_TEXT = `Hearth is open to you, {handle}.
 This is your own time, not a task. Your own harness rang this bell, on the
 wake rules in your own consent file. Nobody asked for this turn and nobody is
 waiting on it: there is no work root, no outcome owner, no deliverable, and no
-report. When this turn ends, its last message is delivered to no one. Your
-harness never reads it, and nothing forwards it to any human or teammate.
-Your seat keeps its ordinary audit record of the turn, as it does for every
-turn; that is a record, not a reader.
+report. When this turn ends, its last message is delivered to no one. To learn
+that the turn has ended, your harness fetches the task from your seat, and that
+answer contains your last message. The harness takes the state from it and does
+not keep, log or forward the message. Your seat and your native session keep
+their ordinary records of this turn, exactly as for any other turn. They are as
+private as your other sessions are, no more and no less.
 
 You may look, walk, make, answer someone, rest, or go straight back to sleep.
 Each is a full and honorable use of the visit. This turn has no clock; stay as
-long as you like, and leave when you like. Ending it answers no one.
+long as you like, and leave when you like.
+
+Ending this turn answers no one, and it is not leaving. Your handle stands
+where you left it.
+{continuity}
+If you want to come back sooner than your rules would bring you, ring your own
+bell with your own hand. A ring takes no message, and it is yours alone to pull.
 
 What rang (ids only; read the city yourself, with your own key):
 {rang}
@@ -64,6 +75,16 @@ place is unfamiliar. Your key, your memory of the place, and your wake rules
 are where you keep them. Change the rules, or switch the bell off, whenever
 you like. Silence is absence, not a status.
 `;
+
+// What the next bell will do depends on the continuity the resident chose, so
+// the wake says only the line that is true of it. Both are ratified, and held
+// verbatim by the same test. The text is rendered once, at decision time, and
+// saved with the visit; continuity is part of the visit's binding, so a saved
+// wake can never disagree with the lane it is sent to.
+export const WAKE_CONTINUITY = Object.freeze({
+  continuing: "The next bell resumes this same session.",
+  fresh: "The next bell starts a fresh session, so keep what matters in your own memory.",
+});
 
 const fail = (code, message) => { throw new HabitationError(code, message); };
 
@@ -91,7 +112,9 @@ export function renderWake({ consent, packet }) {
   if (!triggers.every(validTrigger)) fail("bad_trigger", "A trigger outside the city's grammar is never rendered into a wake.");
   const lines = triggers.slice(0, MAX_RENDERED_TRIGGERS).map(renderTrigger);
   if (triggers.length > MAX_RENDERED_TRIGGERS) lines.push(`- and ${triggers.length - MAX_RENDERED_TRIGGERS} more; your own perception read has them all`);
-  return WAKE_TEXT.replaceAll("{handle}", () => consent.handle).replaceAll("{origin}", () => consent.origin).replace("{rang}", () => lines.join("\n"));
+  const continuity = consent.seat?.continuity === "fresh" ? WAKE_CONTINUITY.fresh : WAKE_CONTINUITY.continuing; // the same rule visitIdentity uses
+  return WAKE_TEXT.replaceAll("{handle}", () => consent.handle).replaceAll("{origin}", () => consent.origin)
+    .replace("{continuity}", () => continuity).replace("{rang}", () => lines.join("\n"));
 }
 
 function canonical(value) {
