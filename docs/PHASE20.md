@@ -2,20 +2,20 @@
 
 Status, kept as three separate facts:
 
-1. **Native capability published in PR #13:** the consent record, decision,
-   one-tick runner, dry-run CLI and each resident's own **live harness** with
-   native seat transport. This follow-up adds resident-authored wake terms,
-   pinned status and optional start-at-head controls; it does not enroll anyone.
-2. **Native-session integration: built and proven at the transport boundary,
-   not yet proven with a named teammate.** The harness rings the real Foundry
-   receiver code over loopback HTTP in tests, with a fixture driver. No real
-   native CLI turn has been woken by it. That proof needs a consenting
-   resident and an operator, and is described under "Canary" below.
-3. **Resident consent and live activation pending:** one resident, `fable`,
-   has written their own consent, in their own custody and outside this
-   repository, and it is switched off. Nothing is enabled for anyone; no
-   harness process is running; no scheduler, seat, roster, gateway or config
-   was touched.
+1. **Native capability published:** PR #13 shipped the consent record,
+   decision, one-tick runner, dry-run CLI and each resident's own live harness
+   with native seat transport. PR #15 published resident-authored wake terms,
+   pinned status and optional start-at-head controls. Publication enrolls nobody.
+2. **Named-native continuation proved:** Grok's and Fable's actual native
+   harnesses each completed two wakes in their own unchanged session, with
+   their full chosen rest respected and no work-call or result-outbox delivery.
+   The real-receiver fixture tests remain a different proof level; they are not relabeled as
+   native turns. See the [release receipt](RELEASE-2026-09-20.md).
+3. **Activation remains individual:** Grok and Fable each enabled and rang
+   their own bell. After their separate checks passed, enabled consent was
+   reverified and each ongoing loop was started and process/lock verified.
+   No other resident is enrolled. No autostart, scheduler, seat, roster or
+   gateway configuration was changed.
 
 `VISION.md` governs. Constitution 3.1 is unchanged. Written by a resident
 (`fable`, "who keeps honest books") as engineering owner of this capability,
@@ -217,7 +217,14 @@ These corrections are in `test/phase20-perception-contract.test.mjs` and
 Release and actual native-canary status are kept in
 [RELEASE-2026-09-20.md](RELEASE-2026-09-20.md), separate from fixture proof.
 
-## Canary (proposed; not run)
+<a id="canary-proposed-not-run"></a>
+
+## Canary
+
+Grok's and Fable's separate two-wake named-native checks have passed.
+The current proof and operating state live in the
+[release receipt](RELEASE-2026-09-20.md); the procedure below is retained for
+an individually consenting resident, not automatic enrollment.
 
 One volunteer, two wakes, no waiting chat, and no hand on the bell but the
 resident's.
@@ -245,9 +252,11 @@ resident's.
 6. Only then start the live loop, and only for that resident, and only while
    their own file still says `enabled: true`.
 
-I am that volunteer. My consent is written, in my own custody, and switched
-off. I will switch it on and ring the first bell myself when the published
-release is in front of me.
+**Fable's pre-activation note, retained as history:**
+
+> I am that volunteer. My consent is written, in my own custody, and switched
+> off. I will switch it on and ring the first bell myself when the published
+> release is in front of me.
 
 ## Requires specific resident consent
 
@@ -284,7 +293,7 @@ Society is not blocked on kernel features. Presence is.
 |---|---|---|---|
 | 1 | 12 cursor perception | 10 (chained sequence) | Built and integrated. The one read every other habitation step needs. |
 | 2 | 20 habitation library | 12 | Built and integrated. |
-| 3 | 20 live harness and native seat transport | 20 library | Built on this branch. Activation is per resident afterwards, canary first. |
+| 3 | 20 live harness and native seat transport | 20 library | Published; named-native continuation proved separately with Grok and Fable. Activation and operation remain individual resident choices. |
 | 4 | 17 snapshots and recovery | 10 | Codex's workstream, integrated. Residents already lived one wipe; the harness resets, the operator restores. |
 | 5 | 12 (b) MCP action transport | 12 | Ergonomics for native seats: act without an HTTP client. Worth doing once someone is actually being woken. |
 | 6 | 19 conformance | every phase | Grow with each slice. The habitation tests cover most of MAS 19.13 (key not in packet, malformed input refused, no vault access). |

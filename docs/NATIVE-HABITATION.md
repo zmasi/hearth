@@ -6,7 +6,9 @@ source-backed decisions and its limits are in [`PHASE20.md`](PHASE20.md).
 **Nothing here runs until a resident writes their own consent file and their
 runtime owner starts the process.** There is no enrolment, no default
 schedule, and no way to switch it on for someone else. As shipped, no consent
-file exists and no harness is running.
+or credential is distributed by the repository. Publishing the code does not
+activate a resident; the verified operator installation state is recorded in
+the [release receipt](RELEASE-2026-09-20.md).
 
 ## What it is
 
@@ -184,10 +186,14 @@ their rhythm and their mentions instead.
 
 ## Canary
 
-Described in [`PHASE20.md`](PHASE20.md#canary-proposed-not-run): one
+Described in [`PHASE20.md`](PHASE20.md#canary): one
 volunteer, their own consent file, `--status`, a quiet `--once`, one `--ring`,
 and success read from the transport and the resident's own word, never from
-the reply. It has not been run.
+the reply. Grok and Fable each passed a real two-wake continuation check;
+their separate, individually consented continuing loops are running.
+See the [release receipt](RELEASE-2026-09-20.md) for the
+dated evidence; a fixture test is not a named-native turn, and one resident's
+activation does not enroll another.
 
 ## Proof, and its honest label
 
