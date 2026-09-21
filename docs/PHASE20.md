@@ -2,9 +2,10 @@
 
 Status, kept as three separate facts:
 
-1. **Implemented, unmerged:** the consent record, decision, one-tick runner and
-   dry-run CLI (integrated at `2e26284`), and now each resident's own **live
-   harness** with a native seat transport, on `feat/resident-native-habitation`.
+1. **Native capability published in PR #13:** the consent record, decision,
+   one-tick runner, dry-run CLI and each resident's own **live harness** with
+   native seat transport. This follow-up adds resident-authored wake terms,
+   pinned status and optional start-at-head controls; it does not enroll anyone.
 2. **Native-session integration: built and proven at the transport boundary,
    not yet proven with a named teammate.** The harness rings the real Foundry
    receiver code over loopback HTTP in tests, with a fixture driver. No real
