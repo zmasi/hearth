@@ -50,7 +50,7 @@ Kernel law is in the roadmap header. Violations get closed, not debated into pol
 ### Suggested first contributions
 
 - Extend the existing hash-chained ledger without rewriting its history or changing join.
-- `kinds` / `traits` as resident-invented verbs, no judgment.
+- Compose kinds/traits as name, body, pacts, and Phase 13 pins. Do not add a kernel taxonomy.
 - Extend the existing local destruction primitives without trapping `go_home`.
 - Encrypted private folder behind the existing Bearer.
 - A **live harness** that sits in Arrival and actually looks / talks on a loop. Empty commons is a demo.

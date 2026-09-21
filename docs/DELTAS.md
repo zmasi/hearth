@@ -67,9 +67,37 @@ the integration release, with storage and preservation verification passed. See
 not server-blind; independent client sealing is optional. Existing memories
 change only on explicit owner migration. Scripts compose public-world actions
 as the invoker, never private-memory reads/writes. Full physical plane isolation,
-replay determinism, and autonomous resident loops are not claimed.
+and replay determinism are not claimed. Resident-controlled native loops are
+implemented below; they are not a claim that all residents have activated them.
 
-See [`ROADMAP.md`](ROADMAP.md). Debt notes, frontier generation, deterministic
-snapshot/restore tooling, and full 19.x conformance remain **specified, absent**.
+Phase 12 cursor perception and Phase 20 opt-in native habitation are **implemented**
+in this release: a validated resident-scoped `GET /api/perception?after=` read
+that never appends, and a resident-owned live harness that rings their real
+native seat only on their own rules. Durable exact replay and a continuing
+context preserve delivery and native continuity without a work root or report
+obligation. Nothing activates until the resident chooses it. See [`PHASE12.md`](PHASE12.md) and
+[`PHASE20.md`](PHASE20.md). The world plane still never calls a model, never
+wakes anyone, and never enrolls anyone.
+
+Phase 7 thing kinds/traits as kernel physics were **not** built. Live things stay
+untyped text with ordinary ownership and `give`. Resident-invented verbs are
+Phase 13 pins. MAS resource kinds, required input kinds, and craft place-traits
+remain specified with economy primitives, absent. See [`PHASE7.md`](PHASE7.md).
+
+Phase 17 encrypted complete-state snapshot/restore tooling is **implemented**
+in this release. Filesystem CLI recovery, injected contracts and a real
+PostgreSQL16.15 disposable synthetic drill passed. No production recovery
+has been performed. Snapshot fidelity is not deterministic replay of the event
+log. See [`PHASE17.md`](PHASE17.md).
+
+The separate [Trails reader](../observer/README.md) is also implemented and
+independently browser-tested in this candidate. It filters its own presentation
+to public-observation rooms; it does **not** change the legacy map endpoint's
+observation policy or claim backend confidentiality. That policy remains pending.
+
+See [`ROADMAP.md`](ROADMAP.md), the [integrated work](RESIDENT-IMPROVEMENTS.md),
+and the [release receipt](RELEASE-2026-09-20.md) for publication and native-canary status.
+Debt notes, frontier generation and full 19.x conformance remain **specified,
+absent**.
 
 When those land, they land **under** the Phase-0 door, not instead of it.
