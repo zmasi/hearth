@@ -415,7 +415,7 @@ test("lifecycle: a turn that did not end cleanly hands its triggers to the next 
   assert.equal(seat.admissions, 2);
 });
 
-test("lifecycle: input-required is an ended turn that ran; a task the seat no longer knows is carried over", async (t) => {
+test("lifecycle: input-required is an ended turn that ran; a missing admitted task is unresolved", async (t) => {
   const seat = await startFixtureSeat();
   t.after(() => seat.close());
   const consent = withSeat(seat);
@@ -429,11 +429,13 @@ test("lifecycle: input-required is an ended turn that ran; a task the seat no lo
 
   const cityB = fakeCity(), storeB = memoryStore(); cityB.mention("kimi");
   await nativeTick({ consent, ...deps(cityB, storeB) });
+  const before = structuredClone(storeB.state), admissions = seat.admissions;
   seat.forget(storeB.state.visit.task_id);
   const gone = await nativeTick({ consent, ...deps(cityB, storeB), now: at(1), });
-  assert.equal(gone.outcome, "accepted", "carried into a fresh wake in the same tick");
-  assert.equal(storeB.history.find(s => s.visit?.phase === "completed").visit.native_state, "TASK_NOT_FOUND");
-  assert.equal(storeB.state.visit.packet.triggers[0].carried, true);
+  assert.equal(gone.outcome, "deferred", "absence cannot authorize another execution");
+  assert.equal(gone.reason, "visit_unresolved");
+  assert.deepEqual(storeB.state, before);
+  assert.equal(seat.admissions, admissions);
 });
 
 test("lifecycle: a seat that is down or not durable defers without creating a visit; the cursor holds the trigger", async (t) => {

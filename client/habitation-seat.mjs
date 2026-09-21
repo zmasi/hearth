@@ -188,13 +188,13 @@ export async function admitWake({ seat, consent, visit, fetchImpl = globalThis.f
 }
 
 // Exact task lookup by id. Only the transport state is kept.
-export async function observeVisit({ seat, task_id, fetchImpl = globalThis.fetch, readToken = defaultReadToken }) {
+export async function observeVisit({ seat, task_id, context_id, fetchImpl = globalThis.fetch, readToken = defaultReadToken }) {
   const body = await rpc({ seat, fetchImpl, readToken, method: "GetTask", params: { id: task_id } });
   if (body.error) {
     if (body.error.code === -32001) return { missing: true };
     fail("seat_rejected", `The seat rejected the lookup (code ${Number(body.error.code) || 0}).`);
   }
   const task = unwrapTask(body.result);
-  if (!task || task.id !== task_id) fail("seat_bad_response", "The seat answered for a different task.");
+  if (!task || task.id !== task_id || (context_id !== undefined && task.contextId !== context_id)) fail("seat_bad_response", "The seat answered for a different task or context.");
   return { native_state: String(task.status?.state ?? "") };
 }

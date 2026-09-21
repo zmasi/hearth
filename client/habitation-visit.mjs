@@ -28,9 +28,19 @@ import { HabitationError, decide, defaultReadKey, readPerception } from "./habit
 import { admitWake, defaultReadToken, observeVisit, phaseOf, renderWake, seatCapability, visitIdentity } from "./habitation-seat.mjs";
 
 const DID_NOT_END_CLEANLY = new Set(["TASK_STATE_FAILED", "TASK_STATE_CANCELED", "TASK_STATE_REJECTED",
-  "TASK_STATE_AUTH_REQUIRED", "TASK_NOT_FOUND", "RELEASED_BY_RESIDENT"]);
+  "TASK_STATE_AUTH_REQUIRED", "RELEASED_BY_RESIDENT"]);
 const SEAT_TROUBLE = new Set(["seat_unreachable", "seat_unauthorized"]);
 const inFlight = (state) => Boolean(state.visit && state.visit.phase !== "completed");
+
+// Replay deduplicates only within the receiver that could already have admitted
+// this intent. A changed consent must never redirect an unresolved delivery.
+const bindingOf = consent => ({ handle: consent.handle, origin: consent.origin,
+  seat_url: consent.seat.url, expect_name: consent.seat.expect_name,
+  continuity: consent.seat.continuity });
+function sameBinding(visit, consent) {
+  const expected = bindingOf(consent);
+  return visit.binding && Object.entries(expected).every(([key, value]) => visit.binding[key] === value);
+}
 
 // End the visit in our books. The wake text and packet are dropped: an ended
 // visit is a compact transport record, replaced by the next one, never a log.
@@ -88,13 +98,16 @@ async function sendPending(state, now, persist, seatDeps, { seatChecked = false 
 
 async function refresh(state, now, persist, seatDeps) {
   let seen;
-  try { seen = await observeVisit({ ...seatDeps, task_id: state.visit.task_id }); }
+  try { seen = await observeVisit({ ...seatDeps, task_id: state.visit.task_id, context_id: state.visit.context_id }); }
   catch (error) {
     if (!(error instanceof HabitationError)) throw error;
     return { outcome: state.visit.phase, reason: error.code, state };
   }
-  const nativeState = seen.missing ? "TASK_NOT_FOUND" : seen.native_state;
-  const phase = seen.missing ? "completed" : phaseOf(nativeState);
+  // A vanished record says nothing about whether its executor stopped. Preserve
+  // the exact visit and budget until transport reconciliation or explicit release.
+  if (seen.missing) return { outcome: "deferred", reason: "visit_unresolved", state };
+  const nativeState = seen.native_state;
+  const phase = phaseOf(nativeState);
   if (phase === "completed") {
     const next = settle(state, nativeState, now);
     await persist(next);
@@ -117,6 +130,7 @@ export async function nativeTick({ consent, state, persist, now = new Date().toI
     ringConsumed: Boolean(ring && finalState.last_ring_id === ring.id) });
 
   if (inFlight(current)) {
+    if (!sameBinding(current.visit, consent)) return done({ outcome: "deferred", reason: "visit_binding_changed" });
     const step = current.visit.phase === "pending" ? await sendPending(current, now, persist, seatDeps) : await refresh(current, now, persist, seatDeps);
     current = step.state;
     if (inFlight(current)) return done(step);
@@ -145,7 +159,7 @@ export async function nativeTick({ consent, state, persist, now = new Date().toI
   if (held) return done({ outcome: "deferred", reason: held });
 
   const identity = visitIdentity({ consent, packet: decision.packet });
-  const visit = { ...identity, task_id: null, phase: "pending", native_state: null, created_at: now, accepted_at: null,
+  const visit = { ...identity, binding: bindingOf(consent), task_id: null, phase: "pending", native_state: null, created_at: now, accepted_at: null,
     observed_at: null, ended_at: null, attempts: 0, packet: decision.packet, text: renderWake({ consent, packet: decision.packet }) };
   // decide() stamps the wake at decision time; here it is counted at acceptance instead.
   const { last_wake_at: _decided, ...proposed } = decision.state;
