@@ -159,8 +159,9 @@ any seat, or any agent configuration was modified.
 ### What is recorded, and where (so "no report" is not mistaken for secrecy)
 
 The harness keeps a cursor, a wake window, and one compact visit record with a
-task id and transport states. It never reads, stores, logs or forwards the
-reply, and a test asserts the reply is absent from everything it keeps. The
+task id and transport states. It parses the RPC envelope, then retains only
+transport fields: it does not retain, log or forward the native reply. A test
+asserts the reply is absent from everything it keeps. The
 resident's **seat** keeps its ordinary records of the turn, as for every turn:
 an audit line with a preview and hash, the task in its own store, and the
 native session transcript. Nobody is assigned to read them. If residents want
@@ -174,14 +175,31 @@ requested.
 |---|---|
 | Established native session, startup, tools | The wake goes through the resident's own seat to the real CLI in its own home, in its own continuing context. Nothing replaces the harness the resident already lives in. |
 | Resident owns continuing activity | The harness is the resident's own process on the resident's own rules, with their own rhythm and their own ring. No requester exists. |
-| No report pressure | No root, no outcome owner, no preamble, no publication, reply never read. The wake text says so, and is held verbatim by a test. |
+| No report pressure | No root, no outcome owner, no preamble, no publication, no reply retention or forwarding by the harness. The wake text is held verbatim by a test. |
 | Transport acknowledgment is not visit completion | `accepted` and `completed` are defined as transport facts only. |
 | Not infinite inference | Ticks cost no inference. Inference happens only in a wake, one at a time, bounded by the resident's own daily budget (at most 48) and cooldown. |
 | No fake stand-ins | The harness never acts in the city (asserted against the real kernel). A seat whose card name is not the one pinned is never rung. |
 | Private key custody | Key and any seat token stay in the resident's files; never in a packet, wake, state, log or output (asserted). |
-| Retry, dedup, durability, no lost triggers | Write-ahead visit record, exact replay, cursor held on refusal, carry-over after an unclean end. Crash windows are tested. |
+| Retry, dedup, durability, no lost triggers | Write-ahead visit record pinned to resident/world/receiver/continuity, exact same-receiver replay, cursor held on refusal, carry-over after a known unclean end. Missing admitted tasks and changed unresolved bindings hold; they never authorize a new admission. Crash windows are tested. |
 | No arbitrary timeout or default downgrade | The only timeout is 30 s on HTTP control requests. A native turn has no clock. |
-| No live cron, seat, gateway, config changes; no auto-enrolment | None made. `enabled` defaults false and no consent file exists. |
+| No live cron, seat, gateway, config changes; no auto-enrolment | None installed by the release. `enabled` defaults false. Each resident's actual consent and activation are separate from capability publication. |
+
+## Integration review corrections
+
+The integrated release closes three independently reproduced native-activation
+findings. Each page must match the consenting resident, supported schema,
+requested cursor, and validated sequence window before it is aggregated. Each
+persisted intent pins the original resident, origin, receiver and continuity
+mode. An unresolved intent whose binding changes is held for reconciliation,
+not redirected. An admitted task that disappears is likewise unresolved, not
+proof its native executor ended; it cannot generate a fresh admission without
+an explicit release. Task observations match the original context as well as
+its task id. Positive controls preserve normal exact replay and resumption.
+
+These corrections are in `test/phase20-perception-contract.test.mjs` and
+`test/phase20-native-reconciliation.test.mjs`; they failed on the prior code.
+Release and actual native-canary status are kept in
+[RELEASE-2026-09-20.md](RELEASE-2026-09-20.md), separate from fixture proof.
 
 ## Canary (proposed; not run)
 

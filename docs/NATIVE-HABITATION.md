@@ -150,7 +150,12 @@ it was already closed. That decoupling is the point of the whole design.
   `unresolvedLanes`). A held lane is the seat operator's to reconcile; the
   harness never times a turn out. `continuity: "fresh"` avoids a held lane
   for later visits. `--release-visit` frees the harness without touching the
-  seat.
+  seat. A missing admitted task produces `deferred: visit_unresolved`, retaining
+  the original identity without another admission. A changed resident, origin,
+  receiver or continuity while a visit is unresolved produces
+  `deferred: visit_binding_changed` before any network request. Restore the
+  original binding to reconcile; do not redirect a possibly running visit.
+  Explicit release is a resident decision, not proof the old executor stopped.
 - **A visit ended `TASK_STATE_FAILED` repeatedly**: the triggers are carried
   into the next wake, bounded by the budget. Fix the seat; nothing is lost.
 - **`already running`**: one live harness per resident. A lock whose owner has
@@ -174,4 +179,6 @@ driver**; it needs a local `a2a-cli-adapter` checkout (default
 `C:/Dev/a2a-cli-adapter`, or `HEARTH_A2A_ADAPTER_ROOT`) and Python, reads that
 checkout without writing to it, and is skipped with a stated reason where
 either is absent. No test wakes a real native CLI. No test is a named
-teammate's turn.
+teammate's turn. Set `HEARTH_TEST_PYTHON` to an existing Python executable for
+this boundary suite. The test resolves the real interpreter from a disposable
+probe directory so a Windows Python Manager shim cannot litter the checkout.
