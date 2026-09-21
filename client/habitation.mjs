@@ -253,6 +253,34 @@ export async function defaultReadKey(path) {
   return readFile(path, "utf8");
 }
 
+// Each page belongs to the consenting resident and the exact requested window.
+// Validate before aggregation: rewriting `after` afterward must not conceal a
+// wrong-resident response or let malformed bounds skip resident-visible work.
+const safeCursor = value => Number.isSafeInteger(value) && value >= 0 && value <= 999999999;
+function validatePerceptionPage(body, consent, cursor, limit) {
+  const invalid = () => bad("bad_perception", "The perception response does not match the resident or page contract.");
+  if (!isObject(body) || body.ok !== true || body.schema_version !== "hearth-perception-v1"
+      || body.handle !== consent.handle || body.after !== cursor || body.chained !== true
+      || !safeCursor(body.world_sequence) || !safeCursor(body.next_after)
+      || body.world_sequence < cursor || body.next_after < cursor || body.next_after > body.world_sequence
+      || typeof body.truncated !== "boolean" || !Array.isArray(body.events) || !Array.isArray(body.mentions)
+      || body.events.length > limit) invalid();
+  let previous = cursor;
+  for (const event of body.events) {
+    if (!isObject(event) || !safeCursor(event.seq) || event.seq <= previous || event.seq > body.next_after) invalid();
+    previous = event.seq;
+  }
+  if (previous !== body.next_after) invalid();
+  if (body.truncated ? (body.next_after <= cursor || body.next_after >= body.world_sequence)
+      : body.next_after !== body.world_sequence) invalid();
+  for (const note of body.mentions) {
+    if (!isObject(note)) invalid();
+    if (note.seq === undefined) {
+      if (note.legacy !== true || cursor !== 0) invalid();
+    } else if (!safeCursor(note.seq) || note.seq <= cursor || note.seq > body.next_after) invalid();
+  }
+}
+
 // Read every page after the cursor within one tick, so a long backlog is seen
 // whole and decided once. Pages are exact (Phase 12 windows mentions by the
 // same sequence as events), so nothing is dropped or repeated across pages.
@@ -267,11 +295,14 @@ export async function readPerception({ consent, key, after, fetchImpl, limit = D
     let body = null;
     try { body = await response.json(); } catch { body = null; }
     if (response.status === 401) return { error: "unknown_key" };
-    if (response.status === 400 && body?.error_class === "cursor_ahead") return { cursorAhead: body.world_sequence };
+    if (response.status === 400 && body?.error_class === "cursor_ahead") {
+      if (!safeCursor(body.world_sequence) || body.world_sequence >= cursor) bad("bad_perception", "The cursor-ahead response has no valid earlier ledger head.");
+      return { cursorAhead: body.world_sequence };
+    }
     if (response.status !== 200 || !body?.ok) return { error: "perception_unavailable", status: response.status };
+    validatePerceptionPage(body, consent, cursor, limit);
     pages.push(body);
     if (!body.truncated) break;
-    if (!isInt(body.next_after) || body.next_after <= cursor) bad("cursor_stalled", "The perception page did not advance the cursor.");
     cursor = body.next_after;
   }
   const last = pages.at(-1);
