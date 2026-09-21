@@ -1,9 +1,11 @@
 # Phase 17: verified state snapshots and recovery
 
-Implemented and exercised locally on base `d3a03c5ec1e5370b8fb887f19fc7c34eb1f5c702`
-in `feat/phase17-verified-recovery`. Integration, PostgreSQL acceptance, snapshot
-acquisition, and production recovery remain separate operator work. This document
-does not assert deployment or completion of the MAS zero-loss/replay aspiration.
+Implemented initially on base `d3a03c5ec1e5370b8fb887f19fc7c34eb1f5c702`
+in `feat/phase17-verified-recovery`. A subsequent independent real PostgreSQL
+16.15 synthetic recovery drill passed all 11 checks; see the
+[2026-09-20 release verification](RELEASE-2026-09-20.md). Production snapshot
+acquisition, routine backup operation and live recovery remain separate facts.
+This does not assert completion of the MAS zero-loss/replay aspiration.
 
 ## What is delivered
 
@@ -187,8 +189,10 @@ WAL, external blobs/assets, resident-held keys, and host configuration are not
 inside this archive. Schema preparation, permissions, private archive persistence,
 real PostgreSQL restore drills, scheduling, offsite retention, RPO/RTO, reconciling
 post-capture writes, and any live cutover require separate operator work. This
-implementation exercised no live or local PostgreSQL server and acquired no
-production snapshot. A code-level lock test is not a PostgreSQL acceptance drill.
+original implementation exercised injected clients only. The later acceptance
+drill exercised a real disposable local PostgreSQL server, not production, and
+acquired no production snapshot. Its exact guarantees and limits are recorded
+in the release verification; it is not a live recovery or network-fault drill.
 
 ## Validation and honest limits
 
