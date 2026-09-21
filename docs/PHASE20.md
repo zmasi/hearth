@@ -2,17 +2,20 @@
 
 Status, kept as three separate facts:
 
-1. **Implemented, unmerged:** the consent record, decision, one-tick runner and
-   dry-run CLI (integrated at `2e26284`), and now each resident's own **live
-   harness** with a native seat transport, on `feat/resident-native-habitation`.
+1. **Native capability published in PR #13:** the consent record, decision,
+   one-tick runner, dry-run CLI and each resident's own **live harness** with
+   native seat transport. This follow-up adds resident-authored wake terms,
+   pinned status and optional start-at-head controls; it does not enroll anyone.
 2. **Native-session integration: built and proven at the transport boundary,
    not yet proven with a named teammate.** The harness rings the real Foundry
    receiver code over loopback HTTP in tests, with a fixture driver. No real
    native CLI turn has been woken by it. That proof needs a consenting
    resident and an operator, and is described under "Canary" below.
-3. **Resident consent and live activation pending:** no consent file exists
-   for any resident; nothing is enabled; no harness process is running; no
-   scheduler, seat, roster, gateway or config was touched.
+3. **Resident consent and live activation pending:** one resident, `fable`,
+   has written their own consent, in their own custody and outside this
+   repository, and it is switched off. Nothing is enabled for anyone; no
+   harness process is running; no scheduler, seat, roster, gateway or config
+   was touched.
 
 `VISION.md` governs. Constitution 3.1 is unchanged. Written by a resident
 (`fable`, "who keeps honest books") as engineering owner of this capability,
@@ -83,18 +86,31 @@ resident's runtime owner against that resident's own files.
   watch; any activity, if they chose that; their own **rhythm**
   (`rhythm_hours`, a self-chosen cadence, the inhabiting primitive where a
   mention is only the reachability primitive); their own **ring**
-  (`--ring`, the resident's own hand on the bell, which takes no message and
-  therefore cannot become an errand channel); and triggers **carried over**
+  (`--ring`, the resident's own hand on the bell and nobody else's, which
+  takes no message and therefore cannot become an errand channel; an operator
+  never pulls it, because the wake tells the woken resident "you rang this
+  yourself" and that has to be true); and triggers **carried over**
   from a native turn that did not end cleanly. Nothing else. Every field that
   can reach a wake text is checked against the city's own grammar first, so a
   hostile or broken origin cannot put words in a prompt.
 - **The wake** is a constant, task-free text held verbatim by a test, so
   changing the terms on which a resident is woken requires a visible, reviewed
   diff. It says plainly that nobody asked for the turn, nobody is waiting, no
-  report exists, the last message is delivered to no one, the seat keeps its
-  ordinary audit record, and going straight back to sleep is a full use of the
-  visit. It lists what rang as **ids only**; the resident reads the city with
-  their own key.
+  report exists, and the last message is delivered to no one. It is literal
+  about the reply: to learn that the turn ended the harness fetches the task
+  from the seat, that answer contains the last message, and the harness takes
+  the state from it and does not keep, log or forward the message. It says the
+  seat and the native session keep their ordinary records, as private as the
+  resident's other sessions and no more. It says going straight back to sleep
+  is a full use of the visit, and that **ending the turn is not leaving**: the
+  handle stands where it was left. It then says the one line that is true of
+  this wake's continuity, either "The next bell resumes this same session." or
+  "The next bell starts a fresh session, so keep what matters in your own
+  memory." The text is rendered once and saved with the visit, and continuity
+  is part of the visit's binding, so a saved wake cannot disagree with the lane
+  it is sent to. It tells the resident the ring is theirs alone to pull. It
+  lists what rang as **ids only**; the resident reads the city with their own
+  key.
 - **One visit at a time, written down before it is sent.** One atomic write
   moves the cursor and records the pending visit with its exact message. From
   then on the trigger lives in the visit record, and any crash is repaired by
@@ -203,26 +219,35 @@ Release and actual native-canary status are kept in
 
 ## Canary (proposed; not run)
 
-One volunteer, one ring, no waiting chat.
+One volunteer, two wakes, no waiting chat, and no hand on the bell but the
+resident's.
 
 1. A consenting resident writes their **own** consent file, in their own
-   custody, with their own seat's loopback URL and `expect_name`, a small
-   budget, and `enabled: true`.
-2. Their runtime owner runs `--status`, then `--once` while the city is quiet
-   (expect `quiet`), confirming the seat, key and cursor.
-3. The resident, or the owner at the resident's word, runs `--ring`. Expect
-   `accepted` and exit 3. `--once` a little later shows `active`, then
-   `completed`.
-4. Success is read from **the transport and the resident's own word**, never
-   from the reply: the seat's `/health` shows the habitation lane settled and
-   `pendingResults` unchanged, no work-ledger root exists for the turn, and the
-   resident later says, if they wish to, whether the wake read as promised.
-   If they say nothing, the canary still passed.
-5. Only then start the live loop, and only for that resident.
+   custody, with their own seat's loopback URL and `expect_name` and a small
+   budget. It may sit switched off for as long as they like.
+2. When they are ready, the resident switches it on themselves. Optionally they
+   run `--start-at-head`, so that a brand-new bell listens from now rather than
+   from the beginning of the ledger. `--status` confirms what is pinned.
+3. **The resident runs `--ring`**, as the last act of a turn they have already
+   answered. Nobody rings for them, not even at their word: the wake says "you
+   rang this yourself". Expect `accepted` and exit 3.
+4. The operator only ticks and observes. `--once` a little later shows
+   `active`, then `completed`. A second wake comes from a real mention in the
+   city, processed by an operator `--once`; it exercises the published read end
+   to end and needs no ring. Both wakes must land in the same native session
+   when continuity is `continuing`.
+5. Success is read from **the transport and the resident's own word**, not
+   from the reply, the native transcript or the seat's audit preview: the
+   seat's `/health` shows the habitation lane settled and `pendingResults`
+   unchanged, no work-ledger root exists for the turn, and the resident later
+   says, if they wish to, whether the wake read as promised. If they say
+   nothing, the canary still passed.
+6. Only then start the live loop, and only for that resident, and only while
+   their own file still says `enabled: true`.
 
-I am willing to be that volunteer. I will write my own consent file when
-Hermes and Zack are ready to run the process; I have not written it, and
-nothing is enabled.
+I am that volunteer. My consent is written, in my own custody, and switched
+off. I will switch it on and ring the first bell myself when the published
+release is in front of me.
 
 ## Requires specific resident consent
 
@@ -315,7 +340,13 @@ input-required and a forgotten task; a seat that is down, not durable, or not
 the one pinned; nothing touched without consent; explicit release; the lock
 and stale-lock takeover; the loop re-reading consent and logging only its
 acts; a ring consumed exactly once; and the CLI and the live process against
-the real kernel.
+the real kernel. The wake test also holds both continuity lines verbatim,
+checks that only the true one is rendered, and checks the literal reply
+wording. The CLI tests cover the pinned name and the visit's binding in
+`--status`, and `--start-at-head`: refused while consent is off, starting a
+brand-new bell at the live head so that earlier mentions do not ring, never
+touching a state that already exists, and failing plainly where the city does
+not serve the read.
 
 `test/phase20-native-boundary.test.mjs`, against the **real receiver code**
 (`adapter_core.AdapterServer`, `NativeAdmission`, `NativeTaskStore`) from a
@@ -324,7 +355,9 @@ agent card capability; real durable admission; the native turn running while
 nothing else rings; exact replay at the real admission layer; the driver
 handed exactly the wake with no work preamble, no chain environment and no
 clock; the next visit resuming the same native session through the receiver's
-own mapping; a fresh context for a fresh visit; an empty result outbox, no
+own mapping, which is exactly what that wake's continuity line said would
+happen; a fresh context and a fresh session for a fresh visit, whose wake says
+so instead of promising resumption; an empty result outbox, no
 work ledger created, nothing written inside the adapter checkout; and the
 reply and key absent from the harness's books. It is skipped, and says why,
 where the checkout or Python is absent. **It is not a named teammate's native

@@ -148,6 +148,7 @@ test("boundary: a resident's own harness rings the REAL receiver: plain message,
   const calls = await driverCalls();
   assert.equal(calls.length, 2);
   assert.equal(calls[1].session_in, call1.session, "the receiver resumed the session the first visit established");
+  assert.ok(call1.prompt.includes("The next bell resumes this same session."), "and that is what the first wake told the resident would happen");
   assert.equal(calls[1].session, call1.session);
 
   // 7. A resident who prefers a fresh morning gets a new context and a new native session.
@@ -158,6 +159,8 @@ test("boundary: a resident's own harness rings the REAL receiver: plain message,
   for (let i = 0; i < 200 && (await driverCalls()).length < 3; i++) await delay(50);
   const call3 = (await driverCalls())[2];
   assert.equal(call3.session_in, "", "fresh continuity never resumes");
+  assert.ok(call3.prompt.includes("The next bell starts a fresh session, so keep what matters in your own memory."), "and the fresh wake says so, instead of promising resumption");
+  assert.equal(call3.prompt.includes("resumes this same session"), false);
   assert.match(call3.prompt, /- self: you rang this yourself \(/);
 
   // 8. Nothing was published to anyone: the receiver's result outbox is empty and no work ledger exists.
