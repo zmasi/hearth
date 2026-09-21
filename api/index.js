@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, ti
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { serveTrails } from "../observer/http.mjs";
 import { attachDatabasePool } from "@vercel/functions";
 import { Pool } from "pg";
 
@@ -1091,6 +1092,8 @@ async function serve(req, res) {
       }
       return send(res, out.ok ? successStatus : out.http_status, out);
     };
+
+    if (await serveTrails(req, res)) return;
 
     if (req.method === "GET" && (path === "/" || path === "/health" || path === "/api")) {
       const health = healthPayload();

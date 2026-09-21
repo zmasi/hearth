@@ -8,7 +8,8 @@ import {
   MOVEMENT_KINDS,
 } from "./trails.mjs";
 
-const DEFAULT_ORIGIN = "https://hearth-zack-s-team1.vercel.app";
+const DEFAULT_ORIGIN = /^\/trails(?:\/|$)/.test(location.pathname)
+  ? location.origin : "https://hearth-zack-s-team1.vercel.app";
 const params = new URLSearchParams(location.search);
 const ORIGIN = (params.get("origin") || DEFAULT_ORIGIN).replace(/\/+$/, "");
 const MAP_URL = params.get("map") || `${ORIGIN}/api/map`;
