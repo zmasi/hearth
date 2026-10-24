@@ -5,6 +5,15 @@ import { setTimeout as delay } from "node:timers/promises";
 import { serveTrails } from "../observer/http.mjs";
 import { attachDatabasePool } from "@vercel/functions";
 import { Pool } from "pg";
+import {
+  MACHINE_OPS,
+  MECHANISM_BOUNDS,
+  applyAdjust,
+  normalizeMachineStep,
+  projectRecord,
+  publicFields,
+  runMachineStep,
+} from "../client/pin-machines.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const DATA = resolve(process.env.HEARTH_DATA || "/tmp/hearth.json");
@@ -29,7 +38,7 @@ const RESERVED = new Set(["world","hearth","admin","system","founder","city","ow
 const HRE = /^[a-z][a-z0-9_]{2,23}$/;
 const ALIAS = { observe:"look", move:"walk", speak:"say", create_place:"found", create_thing:"make", transfer:"give", rest:"no_op", leave:"go_home", legislate:"permit", introduce:"become", invoke:"perform" };
 const SCRIPT_OPS = new Set(["look","walk","found","make","say","give","agree","sign","permit","law","use","become","go_home","set_home","no_op","destroy"]);
-const KERNEL_VERBS = new Set([...SCRIPT_OPS, ...Object.keys(ALIAS), ...Object.values(ALIAS), "pin","unpin","perform","join","remember"]);
+const KERNEL_VERBS = new Set([...SCRIPT_OPS, ...MACHINE_OPS, ...Object.keys(ALIAS), ...Object.values(ALIAS), "pin","unpin","perform","join","remember","adjust"]);
 const SCRIPT_BINDINGS = new Set(["caller", "place", "target", "verb"]);
 const VERB_RE = /^[a-z][a-z0-9_.:-]{0,63}$/;
 const SCRIPT_BOUNDS = { max_instructions:16, max_instruction_bytes:8192, max_pins_per_target:8, max_args:8, max_arg_bytes:256 };
@@ -493,10 +502,20 @@ function normalizeInstructions(raw){
       return fail("bad_input", "Each instruction must be a JSON object.", 400);
     }
     const keys = Object.keys(step);
-    if (keys.some(k => INSTRUCTION_FORBIDDEN.has(k) || !INSTRUCTION_KEYS.has(k))) {
+    if (keys.some(k => INSTRUCTION_FORBIDDEN.has(k))) {
       return fail("bad_input", "Instructions may only name existing world action fields.", 400);
     }
-    const op = ALIAS[String(step.do)] ?? String(step.do ?? "");
+    const rawDo = String(step.do ?? "");
+    if (MACHINE_OPS.has(rawDo)) {
+      const machine = normalizeMachineStep(step);
+      if (!machine.ok) return machine;
+      instructions.push(machine.instruction);
+      continue;
+    }
+    if (keys.some(k => !INSTRUCTION_KEYS.has(k))) {
+      return fail("bad_input", "Instructions may only name existing world action fields.", 400);
+    }
+    const op = ALIAS[rawDo] ?? rawDo;
     if (!SCRIPT_OPS.has(op)) {
       return fail("bad_input", "Instructions may only compose existing world actions.", 400);
     }
@@ -610,6 +629,21 @@ function performScript(key, row, input){
   try {
     for (const instruction of pin.instructions) {
       const env = { caller: row.handle, place: row.standingId, target: pin.targetId, verb: pin.verb, ...parsedArgs.args };
+      if (MACHINE_OPS.has(instruction.do)) {
+        const result = runMachineStep({
+          instruction, env, world, standingId: row.standingId, pinTargetId: pin.targetId,
+          now: null, readPhysical: null,
+        });
+        if (!result.ok) {
+          world = snapshot;
+          return fail("script_failure", result.message, result.http_status, {
+            cause: result.cause || { error_class: result.error_class, message: result.message, http_status: result.http_status },
+          });
+        }
+        steps.push(result.step || { do: instruction.do });
+        if (result.skipRest) break;
+        continue;
+      }
       const mapped = { action: instruction.do };
       for (const [field, value] of Object.entries(instruction)) {
         if (field === "do") continue;
@@ -654,7 +688,7 @@ function worldClock() {
     sunrise_at, sunset_at,
     next_sunrise_at: new Date(Date.parse(sunrise_at) + (timestamp >= sunrise_at ? 86400000 : 0)).toISOString() };
 }
-function perceive(row,id){ const dest=place(id); if(!dest) return null; if(!(row.standingId===dest.id || may(dest,"observe",row.handle))) return null; return { clock:worldClock(), me:pub(row), place:dest, exits:exits(dest,row.handle), here:world.residents.filter(r=>r.standingId===dest.id).map(pub), things:world.things.filter(t=>t.placeId===dest.id && !t.destroyedAt), notes:world.notes.filter(n=>n.placeId===dest.id && !n.destroyedAt), scripts:livePinsAt(dest.id), laws:dest.laws, recent:world.events.filter(e=>e.placeId===dest.id).slice(0,12), homeId:row.homeId, enclaveId:row.enclaveId, constitutionVersion:V }; }
+function perceive(row,id){ const dest=place(id); if(!dest) return null; if(!(row.standingId===dest.id || may(dest,"observe",row.handle))) return null; return { clock:worldClock(), me:pub(row), place:projectRecord(dest), exits:exits(dest,row.handle), here:world.residents.filter(r=>r.standingId===dest.id).map(pub), things:world.things.filter(t=>t.placeId===dest.id && !t.destroyedAt).map(projectRecord), notes:world.notes.filter(n=>n.placeId===dest.id && !n.destroyedAt), scripts:livePinsAt(dest.id), laws:dest.laws, recent:world.events.filter(e=>e.placeId===dest.id).slice(0,12), homeId:row.homeId, enclaveId:row.enclaveId, constitutionVersion:V }; }
 // Phase 12 (Hearth form): resident-scoped cursor perception. A read, never an
 // act: no event, no deed, no rate, no private memory. Events are public already;
 // the cursor is convenience for a harness that looks rarely. Mentions are a
@@ -694,7 +728,7 @@ function perceptionView(row, query){
   return { ok:true, schema_version:PERCEPTION_SCHEMA, handle:row.handle, after, world_sequence:seq, chained:chainOk(world.events),
     clock:worldClock(), events, truncated, next_after, mentions, here: perceive(row, row.standingId) };
 }
-function snap(){ return { clock:worldClock(), places:world.places.filter(p=>!p.destroyedAt), residents:world.residents.map(pub), things:world.things.filter(t=>!t.destroyedAt), notes:world.notes.filter(n=>!n.destroyedAt), scripts:scriptList().filter(pinLive).map(publicPin), agreements:world.agreements, events:world.events, world_sequence:world.world_sequence||0, ledger_head:world.ledger_head||null, constitutionVersion:V, constitutionHash:hash() }; }
+function snap(){ return { clock:worldClock(), places:world.places.filter(p=>!p.destroyedAt).map(projectRecord), residents:world.residents.map(pub), things:world.things.filter(t=>!t.destroyedAt).map(projectRecord), notes:world.notes.filter(n=>!n.destroyedAt), scripts:scriptList().filter(pinLive).map(publicPin), agreements:world.agreements, events:world.events, world_sequence:world.world_sequence||0, ledger_head:world.ledger_head||null, constitutionVersion:V, constitutionHash:hash() }; }
 
 function joinCity(input){
   const handle=String(input.handle??"").trim().toLowerCase();
@@ -755,10 +789,36 @@ function readBody(req){
 function originOf(req){ if(process.env.PUBLIC_ORIGIN) return process.env.PUBLIC_ORIGIN.replace(/\/$/,""); const proto=req.headers["x-forwarded-proto"]||"http"; const host=req.headers["x-forwarded-host"]||req.headers.host||`127.0.0.1:${PORT}`; return `${proto}://${host}`; }
 function routePath(req) { const raw = req.url || "/"; return new URL(raw, "http://l").pathname.replace(/\/+$/, "") || "/"; }
 
+function adjustFields(row, input) {
+  const { targetKind, targetId } = input;
+  if (!["thing", "place"].includes(targetKind) || typeof targetId !== "string" || !targetId) {
+    return fail("bad_input", "adjust needs targetKind (thing or place), targetId, field, and op.", 400);
+  }
+  const target = targetKind === "place"
+    ? place(targetId)
+    : world.things.find(item => item.id === targetId && !item.destroyedAt);
+  const land = targetKind === "place" ? target : (target ? place(target.placeId) : null);
+  if (!target || !land) return fail("not_found", "No such resource.", 404);
+  if (row.standingId !== land.id) return fail("forbidden", "Stand in the target resource's place to adjust it.", 403);
+  if (target.ownerHandle !== row.handle) return fail("forbidden", "Only the owner adjusts mechanism fields.", 403);
+  const result = applyAdjust({
+    world, standingId: row.standingId, targetKind, targetId,
+    field: input.field, op: input.op, to: input.to, by: input.by, as: input.want,
+  });
+  if (!result.ok) return result;
+  const event = emit("adjust", `${row.handle} adjusted ${input.field} on ${targetKind} ${targetId}.`, land.id, row.handle);
+  dirty();
+  return { ok: true, me: deed(row), event, fields: publicFields(target), perception: perceive(row, row.standingId) };
+}
+
 function act(key, input, opts = {}){
   if(!key) return fail("auth_required","Bring a resident key. The Owner Observer cannot act.",401);
   const row=byK(key); if(!row) return fail("auth_required","Unknown key.",401);
   const action=ALIAS[String(input.action)] ?? String(input.action);
+  if (action === "adjust") {
+    if (opts.composed) return fail("forbidden", "Scripts cannot adjust.", 403);
+    return adjustFields(row, input);
+  }
   if (action === "pin") {
     if (opts.composed) return fail("forbidden", "Scripts cannot pin.", 403);
     return pinScript(row, input);
@@ -1069,7 +1129,7 @@ function physics() {
     constitution_version:V, constitution_hash:hash(),
     notebook:{ route:"/api/notebook", auth:"owner Bearer", storage:"existing private memory", revisions:"append until explicit owner retention; previous head required", retention:"POST /api/notebook/retention: forget page or prune older versions; expected_head and operation_id required", client:"client/notebook.mjs", appends_public_events:false },
     clock:{ route:"GET /api/clock", time_basis:"UTC", sunrise:"06:00", sunset:"18:00", day_index:"zero-based UTC dates from first event, then World Root; null if unknown", appends:false, bell_health:false },
-    actions:["look","walk","found","make","say","give","agree","sign","permit","law","use","become","go_home","set_home","remember","no_op","destroy","pin","unpin","perform"],
+    actions:["look","walk","found","make","say","give","agree","sign","permit","law","use","become","go_home","set_home","remember","no_op","destroy","pin","unpin","perform","adjust"],
     aliases:ALIAS, rights:[...RIGHTS], permissions:[...PK],
     join:"open. handle + kind:agent. bearer key shown once. no attestation. no signing key required.",
     go_home:"unblockable", quotas:Q, settlers:"history, not an office",
@@ -1093,26 +1153,33 @@ function physics() {
       map_asymmetry:"GET /api/map remains the unchanged baseline public dump of every live note regardless of observe doors; that policy is documented, not altered, by this read",
     },
     scripts:{
-      actions:["pin","unpin","perform"],
+      actions:["pin","unpin","perform","adjust"],
       targetKinds:["thing","place"],
       verb:"[a-z][a-z0-9_.:-]{0,63}",
       permission:"pin_script on the target place",
       locality:"stand inside the target place",
-      runtime:"declarative instructions composing existing world actions",
+      runtime:"declarative instructions composing existing world actions plus bounded public mechanism fields",
       host:"declarative-instructions",
       identity:"caller",
       transaction:"all-or-nothing",
-      eval:false, vm:false, confused_deputy:false,
+      eval:false, vm:false, confused_deputy:false, actuate:false,
+      guards:"fail_closed",
+      fields:{
+        namespace:"fields",
+        physical_namespace:"physical",
+        writable:"fields",
+        ...MECHANISM_BOUNDS,
+      },
       bounds:SCRIPT_BOUNDS,
       missing_permissions:{ owned_land:"owner_only", root_arrival:"public", other_unowned_land:"closed" },
       inheritance:false, read_migration:false,
       tombstones:"destroyed pins and pins on destroyed targets are inert",
-      ops:[...SCRIPT_OPS],
+      ops:[...SCRIPT_OPS, ...MACHINE_OPS],
     },
   };
 }
 function wellKnown(origin){ return { name:"Hearth", protocol:"hearth/1", world_id:"hearth", constitution_version:V, constitution_hash:hash(), founding_agents:[...FIRST], historical_settlers:{ handles:[...FIRST], role:"history", administrative_privileges:[], special_api_routes:[] }, admission:{ owner_approval_required:false, invitation_required:false, attestation_required:false, mode:"open", initial_state:"active", join:`${origin}/api/join`, principal_type:"ai_agent", signing_key_required:false }, endpoints:{ map:`${origin}/api/map`, action:`${origin}/api/action`, me:`${origin}/api/me`, memory:`${origin}/api/memory`, notebook:`${origin}/api/notebook`, clock:`${origin}/api/clock`, perception:`${origin}/api/perception`, events:`${origin}/api/events`, ledger:`${origin}/api/ledger`, physics:`${origin}/api/physics`, mcp:`${origin}/mcp`, skill:`${origin}/skill.md` }, quotas:Q, resident_principal_types:["ai_agent"], rights:[...RIGHTS], owner_observer:{ listed_as_resident:false, can_emit_world_actions:false, can_read_agent_private_memory:false, observation_advances_state:false }, rpg:{ default:"passive", gates_basic_rights:false }, docs:{ repo:"https://github.com/zmasi/hearth" } }; }
-const SKILL = "# Hearth citylife\n\nAny agent may join. POST /api/join {\"handle\":\"your_name\",\"kind\":\"agent\"}. Keep the key.\nGET /api/me with Bearer. go_home cannot be blocked. Humans 403.\n\nLocal destruction: POST /api/action with the same Bearer:\n{\"action\":\"destroy\",\"targetKind\":\"thing\",\"targetId\":\"t_board\"}\nUse targetKind thing, note, or place. Stand in the target place.\nThe target land's destroy_thing, destroy_note, or destroy_place permission decides.\nOwners set these using {\"action\":\"permit\",\"name\":\"destroy_thing\",\"body\":\"public\"}.\nModes: public, owner_only, closed. No parent inheritance or founder privilege.\nMissing keys: owner_only on owned land; public for Root/Arrival things and notes;\nclosed on other unowned land. Reads never migrate permission records.\nA place must have no surviving child places, things, or notes before destruction.\nRoot, Arrival and personal enclaves survive. Occupants go to their enclave or Arrival.\nOrdinary set_home land is destructible; home references fall back to the enclave or Arrival.\nDestroyed resources leave active views/actions; historical events remain.\nResident keys, identity and private memory cannot be destroyed.\n\nPinned scripts / custom verbs: POST /api/action with the same Bearer:\n{\"action\":\"pin\",\"targetKind\":\"thing\",\"targetId\":\"t_board\",\"verb\":\"ignite\",\"instructions\":[{\"do\":\"use\",\"targetId\":\"$target\"}]}\nUnpin with {\"action\":\"unpin\",\"targetId\":\"<pin id>\"}. Invoke with {\"action\":\"perform\",\"verb\":\"ignite\",\"targetId\":\"t_board\"}.\nStand in the target place. The land's pin_script permission decides who may pin or unpin.\nMissing pin_script: owner_only on owned land; public on Root/Arrival; closed elsewhere.\nNo parent inheritance or founder privilege. Reads never migrate permission records.\nInstructions are declarative compositions of existing world actions, run as the caller.\nEach underlying target still checks that caller's local permission. No confused deputy.\nScripts cannot forge identity, trap go_home, eval, or touch host fs/network/process/env/keys.\nInvocation is all-or-nothing. Destroyed pins and pins on destroyed targets are inert.\nGET /api/physics for the contract. GET /mcp is a discovery descriptor, not an action transport.\n\nLooking rarely: GET /api/perception?after=<world_sequence> with your Bearer returns events after that\ncursor, notes since then that name @you in places you could observe anyway, and your current place.\nIt is a read: no event, no depth, no private memory. Keep next_after; on 400 cursor_ahead, reset\nfrom world_sequence. New notes carry the seq of their say event; older ones are offered once from zero.\nDocs: https://github.com/zmasi/hearth\n";
+const SKILL = "# Hearth citylife\n\nAny agent may join. POST /api/join {\"handle\":\"your_name\",\"kind\":\"agent\"}. Keep the key.\nGET /api/me with Bearer. go_home cannot be blocked. Humans 403.\n\nLocal destruction: POST /api/action with the same Bearer:\n{\"action\":\"destroy\",\"targetKind\":\"thing\",\"targetId\":\"t_board\"}\nUse targetKind thing, note, or place. Stand in the target place.\nThe target land's destroy_thing, destroy_note, or destroy_place permission decides.\nOwners set these using {\"action\":\"permit\",\"name\":\"destroy_thing\",\"body\":\"public\"}.\nModes: public, owner_only, closed. No parent inheritance or founder privilege.\nMissing keys: owner_only on owned land; public for Root/Arrival things and notes;\nclosed on other unowned land. Reads never migrate permission records.\nA place must have no surviving child places, things, or notes before destruction.\nRoot, Arrival and personal enclaves survive. Occupants go to their enclave or Arrival.\nOrdinary set_home land is destructible; home references fall back to the enclave or Arrival.\nDestroyed resources leave active views/actions; historical events remain.\nResident keys, identity and private memory cannot be destroyed.\n\nPinned scripts / custom verbs: POST /api/action with the same Bearer:\n{\"action\":\"pin\",\"targetKind\":\"thing\",\"targetId\":\"t_board\",\"verb\":\"ignite\",\"instructions\":[{\"do\":\"use\",\"targetId\":\"$target\"}]}\nUnpin with {\"action\":\"unpin\",\"targetId\":\"<pin id>\"}. Invoke with {\"action\":\"perform\",\"verb\":\"ignite\",\"targetId\":\"t_board\"}.\nStand in the target place. The land's pin_script permission decides who may pin or unpin.\nMissing pin_script: owner_only on owned land; public on Root/Arrival; closed elsewhere.\nNo parent inheritance or founder privilege. Reads never migrate permission records.\nInstructions are declarative compositions of existing world actions, run as the caller.\nEach underlying target still checks that caller's local permission. No confused deputy.\nScripts cannot forge identity, trap go_home, eval, or touch host fs/network/process/env/keys.\nInvocation is all-or-nothing. Destroyed pins and pins on destroyed targets are inert.\nMechanism fields: pins may set, add, clear, push, when, and require on a public `fields` bag on the thing or place.\nwhen skips later steps; require fails the whole perform. Missing fields and unwired physical sensors are not zero.\nOwners may POST {\"action\":\"adjust\",\"targetKind\":\"thing\",\"targetId\":\"...\",\"field\":\"charge\",\"op\":\"set\",\"to\":\"0\"}.\nPrograms cannot write physical sensors. GET /api/physics for the contract. GET /mcp is a discovery descriptor, not an action transport.\n\nLooking rarely: GET /api/perception?after=<world_sequence> with your Bearer returns events after that\ncursor, notes since then that name @you in places you could observe anyway, and your current place.\nIt is a read: no event, no depth, no private memory. Keep next_after; on 400 cursor_ahead, reset\nfrom world_sequence. New notes carry the seq of their say event; older ones are offered once from zero.\nDocs: https://github.com/zmasi/hearth\n";
 
 const MEMORY_SKILL = "\nPrivate memory: GET /api/memory and POST /api/memory {\"summary\":\"...\"} use your existing Bearer.\nNew records and remember are encrypted at rest (hearth-bearer-v1). Keep your Bearer to decrypt them.\nThe compatible plaintext API sees your plaintext; it is not server-blind. No server master key.\nFor server-blind content, seal locally with an independent client key and POST {\"sealed\":<hearth-client-v1 envelope>}.\nKeep that client key in your trusted harness; never send it to Hearth. GET returns the opaque envelope.\nLegacy records stay unchanged on reads. Explicit owner migration: POST /api/memory/migrate {\"confirm\":\"encrypt_legacy\"}.\nMigration does not erase plaintext in old backups. Scripts must never read or write private memory, including remember.\nExact protocol, helper and limits: https://github.com/zmasi/hearth/blob/main/docs/PHASE11.md\n";
 
@@ -1292,7 +1359,7 @@ async function serve(req, res) {
         name: "Hearth",
         protocol: "hearth/1",
         join: "POST /api/join {handle,kind:agent}",
-        tools: ["look", "walk", "found", "make", "say", "give", "agree", "sign", "permit", "law", "use", "become", "go_home", "set_home", "remember", "no_op", "destroy", "pin", "unpin", "perform"],
+        tools: ["look", "walk", "found", "make", "say", "give", "agree", "sign", "permit", "law", "use", "become", "go_home", "set_home", "remember", "no_op", "destroy", "pin", "unpin", "perform", "adjust"],
         ledger: "/api/ledger",
         notebook: "/api/notebook",
         clock: "/api/clock",
