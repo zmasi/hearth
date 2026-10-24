@@ -1,5 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { open, lstat, link } from "node:fs/promises";
+import { isMachineStep, normalizeMachineStep } from "../../client/pin-machines.mjs";
+import { validatePhysicalState } from "./physical-state.mjs";
 
 export const PROFILE = "hearth-state-3.1-phase13-v1";
 export const ARCHIVE_FORMAT = "hearth-snapshot-aes256gcm-v1";
@@ -114,10 +116,12 @@ function rows(list) {
   for (const row of list) { need(object(row) && text(row.id) && !ids.has(row.id)); ids.add(row.id); }
   return new Map(list.map(r => [r.id, r]));
 }
-const PERMISSIONS = new Set(["enter","observe","speak","create_subplace","place_thing","use_thing","create_note","set_local_law","destroy_thing","destroy_note","destroy_place","pin_script"]);
+const PERMISSIONS = new Set(["enter","observe","speak","create_subplace","place_thing","use_thing","create_note","set_local_law","destroy_thing","destroy_note","destroy_place","pin_script","couple_environment"]);
 const SCRIPT_OPS = new Set(["look","walk","found","make","say","give","agree","sign","permit","law","use","become","go_home","set_home","no_op","destroy"]);
-const RESERVED_VERBS = new Set([...SCRIPT_OPS, "observe","move","speak","create_place","create_thing","transfer","rest","leave","legislate","introduce","invoke","pin","unpin","perform","join","remember"]);
-const INSTRUCTION_KEYS = new Set(["do","targetId","targetKind","body","name","title","toHandle","agreementId","memoryType","epistemic"]);
+const MACHINE_OPS = new Set(["set","add","clear","push","when","require","actuate"]);
+const RESERVED_VERBS = new Set([...SCRIPT_OPS, ...MACHINE_OPS, "observe","move","speak","create_place","create_thing","transfer","rest","leave","legislate","introduce","invoke","pin","unpin","perform","join","remember","adjust","configure_physics","couple_channel","uncouple_channel"]);
+const INSTRUCTION_KEYS = new Set(["do","targetId","targetKind","body","name","title","toHandle","agreementId","memoryType","epistemic","field","of","bag","to","by","eq","ne","lt","gte","exists","len_gte","want"]);
+const SCRIPT_INSTRUCTION_OPS = new Set([...SCRIPT_OPS, ...MACHINE_OPS]);
 
 // Validation never calls the live kernel's initial-chain sealing or any vault
 // decryption function. This is a pinned compatibility profile, not state replay.
@@ -186,14 +190,19 @@ export function validateWorld(input) {
     need(/^[a-z][a-z0-9_.:-]{0,63}$/.test(s.verb) && !RESERVED_VERBS.has(s.verb));
     need(Array.isArray(s.instructions) && s.instructions.length > 0 && s.instructions.length <= 16);
     need(Buffer.byteLength(canonical(s.instructions)) <= 8192);
-    for (const op of s.instructions) need(object(op) && SCRIPT_OPS.has(op.do)
-      && Object.entries(op).every(([k, v]) => INSTRUCTION_KEYS.has(k) && typeof v === "string"));
+    for (const op of s.instructions) {
+      need(object(op) && SCRIPT_INSTRUCTION_OPS.has(op.do)
+        && Object.entries(op).every(([k, v]) => INSTRUCTION_KEYS.has(k) && typeof v === "string"));
+      if (isMachineStep(op)) need(normalizeMachineStep(op).ok);
+      else need(Object.keys(op).every(k => !["field","of","bag","to","by","eq","ne","lt","gte","exists","len_gte","want"].includes(k)));
+    }
     // Phase13 hashes JSON.stringify insertion order. PostgreSQL jsonb can
     // reorder object keys, so that original hash is retained, not recomputed.
     // The snapshot's full-state digest authenticates these exact stored values.
     need(typeof s.instructionHash === "string" && HEX.test(s.instructionHash));
     need(s.targetKind === "place" ? places.has(s.targetId) : w.things.some(t => t.id === s.targetId));
   }
+  validatePhysicalState(w, need);
   return { world: w, world_sha256: sha256(canonical(w)), world_sequence: w.world_sequence,
     ledger_head: w.ledger_head, legacy_memories: legacy, encrypted_memories: encrypted };
 }

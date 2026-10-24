@@ -22,6 +22,11 @@ node observer/serve.mjs 8811        # static files only, no world contact
 
 ## What it shows
 
+- **Daylight at the reading**: UTC date, day count and phase from the map's
+  public clock. Sunrise is 06:00 UTC and sunset 18:00. The label adds no fetch,
+  timer, presence inference or notebook surface; old fixture worlds report the
+  clock unavailable. Use "look again" for a fresh reading. It is not bell health.
+
 - **Chronology** of public creations and conversations: notes, things,
   founded places, pacts, and civic events (joins, gives, destroys, becomes,
   permits, laws), ordered by time with absolute UTC timestamps, relative

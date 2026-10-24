@@ -109,6 +109,7 @@ export function buildModel(map, ledger) {
   }).sort((a, b) => a.handle.localeCompare(b.handle));
 
   return {
+    daylight: daylightLabel(map.clock),
     worldSequence: map.world_sequence ?? ledger?.world_sequence ?? null,
     ledgerHead: map.ledger_head ?? ledger?.head_hash ?? null,
     constitutionVersion: map.constitutionVersion ?? null,
@@ -121,6 +122,16 @@ export function buildModel(map, ledger) {
     agreements,
     residents,
   };
+}
+
+// A small observation-time label; no timer, polling or bell-health inference.
+export function daylightLabel(clock) {
+  if (clock?.schema !== 'hearth-clock-v1' || clock.time_basis !== 'UTC'
+    || typeof clock.timestamp !== 'string'
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(clock.timestamp)
+    || !['night', 'sunrise', 'day', 'sunset'].includes(clock.phase)) return 'Daylight unavailable in this reading';
+  const day = Number.isSafeInteger(clock.day_index) && clock.day_index >= 0 ? `Day ${clock.day_index + 1}` : 'Day count unknown';
+  return `${day} · ${clock.timestamp.slice(0, 10)} · ${clock.phase} · ${clock.timestamp.slice(11, 16)} UTC at this reading`;
 }
 
 // Attach ledger sequence numbers to world objects and derive provenance.

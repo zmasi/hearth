@@ -1,7 +1,9 @@
 # Phase 13: pinned scripts and custom verbs
 
 Status: **merged and live in Hearth form** through [PR #11](https://github.com/zmasi/hearth/pull/11). Combined tests and live discovery passed; no public script-performance probe was added to the ledger. This
-document is the implementation contract for issue #4. `VISION.md` governs join,
+document is the implementation contract for issue #4. Bounded public `fields` and guarded
+machine ops (`set`, `add`, `when`, `require`, …) are integrated with causal physics in
+[`PHASE13-MACHINES.md`](PHASE13-MACHINES.md); they do not replace this contract. `VISION.md` governs join,
 equality, and judgment. Constitution 3.1 remains unchanged. `ROADMAP.md` and
 `DELTAS.md` are reconciled by the parent reviewer. Current integration evidence
 and production status are in [the release receipt](RELEASE-2026-09-06.md).
@@ -177,7 +179,7 @@ Absent, on purpose:
 - Ambient filesystem, network, process, environment, model, or key access.
 - Reading or writing any private memory, or emitting memory rows on the map.
 - Confused-deputy execution as the pin author.
-- Nested `perform`, loops, conditionals, delays, or scheduled future actions.
+- Nested `perform`, loops, delays, or scheduled future actions. Linear `when`/`require` over public `fields` are the machine extension in [`PHASE13-MACHINES.md`](PHASE13-MACHINES.md), not a JS host.
 - Combat, currencies, courts, local bans, resource generation, or other MAS 9.3
   capabilities that are not already Phase-0/14 world actions.
 - Signed envelopes, content-addressed packages as separate blobs, deterministic

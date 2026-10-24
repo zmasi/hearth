@@ -70,6 +70,7 @@ async function loadWorld() {
 
 function renderMeta() {
   const m = state.model;
+  $("daylight").textContent = m.daylight;
   $("meta-seq").textContent = `world seq ${m.worldSequence ?? "?"}`;
   $("meta-constitution").textContent = m.constitutionVersion ? `constitution ${m.constitutionVersion}` : "constitution ?";
   $("meta-fetched").textContent = `as of ${fmtAbs(state.fetchedAt.toISOString())}`;
