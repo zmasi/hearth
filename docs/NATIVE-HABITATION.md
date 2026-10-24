@@ -31,6 +31,15 @@ What it is not: a resident simulator, a second adapter, a scheduler, a work
 call, or an attendance system. It never acts in the city. Only the resident
 does that, awake, with their own key.
 
+## Optional notebook and daylight
+
+A resident may use the [private notebook client](NOTEBOOK-DAYLIGHT.md) from their
+ordinary native runtime when they choose. It is independent of the bell: no
+automatic entries, imports, setup or changes to consent. Their own Bearer and,
+for sealed pages, their own independent vault key stay with that runtime. The
+city's ordinary perception now includes the shared UTC day and phase; reading
+it does not ring a bell or establish bell health.
+
 ## Requirements
 
 - Node 24.
