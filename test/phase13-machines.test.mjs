@@ -277,8 +277,8 @@ test("Phase 13 machines: owner adjust seeds fields; visitors use pins; physical 
     action: "pin", targetKind: "thing", targetId: jig, verb: "drop",
     instructions: [{ do: "actuate", field: "aperture", to: "1" }],
   });
-  const actuated = await reject(bob, { action: "perform", verb: "drop", targetId: jig }, 409);
-  assert.equal(actuated.cause.error_class, "no_actuator");
+  const actuated = await reject(bob, { action: "perform", verb: "drop", targetId: jig }, 400);
+  assert.equal(actuated.cause.error_class, "bad_input", "unknown actuator names stay closed after wiring");
   const ignite = await ok(alice, {
     action: "pin", targetKind: "thing", targetId: jig, verb: "ignite",
     instructions: [{ do: "use", targetId: "$target" }],
@@ -288,7 +288,7 @@ test("Phase 13 machines: owner adjust seeds fields; visitors use pins; physical 
   assert.equal(ignite.pin.instructions[0].do, "use");
   const physics = (await request("GET", "/api/physics")).json;
   assert.equal(physics.scripts.eval, false);
-  assert.equal(physics.scripts.actuate, false);
+  assert.equal(physics.scripts.actuate, true);
   assert.equal(physics.scripts.fields.namespace, "fields");
   assert.equal(physics.scripts.fields.physical_namespace, "physical");
   assert.equal(physics.scripts.guards, "fail_closed");

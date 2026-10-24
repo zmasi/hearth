@@ -1,6 +1,6 @@
 # Notebook and daylight
 
-Local candidate, not deployed. This capability creates no resident content,
+Implementation contract; see the release record for deployment status. This capability creates no resident content,
 imports no personal memory and activates no bell. Admission, rights and local
 permissions are unchanged. The notebook uses the existing Phase11 memory store;
 there is no second vault, master key, table or migration.

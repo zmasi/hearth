@@ -12,8 +12,8 @@
 //    - Directed acyclic conservation graph of reaches with bed elevation, surface area, weir crest height,
 //      sluice aperture, and maximum basin capacity.
 //    - Piecewise-analytical linear-reservoir / Nash-cascade integration over elapsed time Δt:
-//      guarantees nonnegative water volume, exact water mass balance (inflow = Δstorage + outflow),
-//      O(1) bounded evaluation over arbitrary multi-day/multi-year absences, and partition/restart equivalence.
+//      nonnegative volumes and shared flow integrals, with numerical regime detection and tested restart tolerances.
+//      No time-step-per-second loop and no discarded elapsed interval.
 // 3. Atmosphere, Weather, Wind & Living Flora:
 //    - Deterministic UTC solar irradiance (aligned with 06:00 sunrise / 18:00 sunset) and seeded synoptic
 //      weather cells (wind speed/direction, temperature, rainfall).
@@ -24,6 +24,7 @@
 //    - Cross-place channel coupling requires local authority on both upstream and downstream parcels.
 
 import { createHash } from "node:crypto";
+import { advanceReservoirComponent, MAX_COUPLED_REACHES } from "./hydrology-solver.mjs";
 
 export const PHYSICS_SCHEMA = "hearth-causal-physics-v1";
 export const GRAVITY_MS2 = 9.80665;
@@ -31,7 +32,7 @@ export const GRAVITY_MS2 = 9.80665;
 const DEFAULT_ROOM_BOUNDS = Object.freeze([20, 10, 20]); // [width_x, height_y, depth_z] in meters
 const DEFAULT_BODY_SIZE = Object.freeze([0.5, 0.5, 0.5]);
 const SYNOPTIC_EPOCH_SEC = 3600; // 1 hour UTC weather cells
-const MAX_WEATHER_HISTORY_EPOCHS = 336; // 14 days of explicit hourly synoptic integration (7x soil moisture tau)
+const WEATHER_CYCLE_EPOCHS = 336; // Explicit fourteen-day climate cycle, aligned to UTC.
 const SOIL_TAU_SEC = 43200; // 12-hour soil moisture relaxation constant
 
 const ALLOWED_PLACE_SENSORS = new Set([
@@ -148,13 +149,14 @@ export function evaluateAtmosphere(world, place, tSec) {
   const epochIdx = Math.floor(tSec / SYNOPTIC_EPOCH_SEC);
   const frac = (tSec - epochIdx * SYNOPTIC_EPOCH_SEC) / SYNOPTIC_EPOCH_SEC;
   const regionKey = config.weather_region || "hearth_valley";
+  const cycle = index => ((index % WEATHER_CYCLE_EPOCHS) + WEATHER_CYCLE_EPOCHS) % WEATHER_CYCLE_EPOCHS;
 
-  const w0 = deterministicUnit(`${genesis}:${regionKey}:wind:${epochIdx}`);
-  const w1 = deterministicUnit(`${genesis}:${regionKey}:wind:${epochIdx + 1}`);
-  const d0 = deterministicUnit(`${genesis}:${regionKey}:dir:${epochIdx}`);
-  const d1 = deterministicUnit(`${genesis}:${regionKey}:dir:${epochIdx + 1}`);
-  const r0 = deterministicUnit(`${genesis}:${regionKey}:rain:${epochIdx}`);
-  const r1 = deterministicUnit(`${genesis}:${regionKey}:rain:${epochIdx + 1}`);
+  const w0 = deterministicUnit(`${genesis}:${regionKey}:wind:${cycle(epochIdx)}`);
+  const w1 = deterministicUnit(`${genesis}:${regionKey}:wind:${cycle(epochIdx + 1)}`);
+  const d0 = deterministicUnit(`${genesis}:${regionKey}:dir:${cycle(epochIdx)}`);
+  const d1 = deterministicUnit(`${genesis}:${regionKey}:dir:${cycle(epochIdx + 1)}`);
+  const r0 = deterministicUnit(`${genesis}:${regionKey}:rain:${cycle(epochIdx)}`);
+  const r1 = deterministicUnit(`${genesis}:${regionKey}:rain:${cycle(epochIdx + 1)}`);
 
   const windRaw = w0 + (w1 - w0) * frac;
   const dirRaw = d0 + (d1 - d0) * frac;
@@ -266,9 +268,10 @@ function resolveReachControl(world, placeId, reach) {
  * When k_i > 0 and V_i > V_c,i, active mobile volume U_i = V_i - V_c,i decays exponentially at rate k_i,
  * and the exact integrated volume discharged out of reach i over [0, Δt] is:
  *   V_discharged,i(Δt) = I_total,i * Δt + V_i(0) - V_i(Δt)
- * Because every downstream reach receives the exact integrated outflow and transient exponential terms of its
- * upstream parents, and regime switches (crossing V_c,i or V_max,i) are solved at their exact analytical root times,
- * water volume is strictly nonnegative, strictly conserved, and partition-equivalent (t0 -> t1 -> t2 === t0 -> t2).
+ * The implementation uses a matrix exponential inside each regime and numerical
+ * bracketing/bisection at boundaries. Equal rates retain the polynomial-exponential
+ * cascade terms. See hydrology-solver.mjs and the regression tolerances; this is
+ * not a proof of bit-identical trajectories for all graphs/platforms.
  */
 export function solveHydrologyNetwork(world, targetSec) {
   const hydro = world?.hydrology;
@@ -378,6 +381,7 @@ function updateInstantaneousRates(state, topoOrder, upstreamOf, downstreamOf) {
     s.inflow_m3s = s.source_inflow_m3s + upFlow;
     if (s.k > 0 && s.volume_m3 > s.crest_volume_m3) {
       s.discharge_m3s = s.k * (s.volume_m3 - s.crest_volume_m3);
+      if (s.volume_m3 >= s.max_volume_m3 - 1e-8) s.discharge_m3s = Math.max(s.discharge_m3s, s.inflow_m3s);
     } else if (s.volume_m3 >= s.max_volume_m3 && s.inflow_m3s > 0) {
       s.discharge_m3s = s.inflow_m3s;
     } else {
@@ -386,161 +390,22 @@ function updateInstantaneousRates(state, topoOrder, upstreamOf, downstreamOf) {
   }
 }
 
-/**
- * Exact event-driven analytical integrator for the linear reservoir DAG over dtTotal seconds.
- * When any reach is filling toward its crest or max capacity with k = 0 (or draining toward crest),
- * we find the exact analytical transition time dtEvent <= remaining, advance all reaches analytically
- * to dtEvent, update the regime, and continue. Because the number of threshold crossings under constant
- * controls is bounded by at most 2 * N_reaches, this finishes in <= 2 * N_reaches analytical steps
- * for ANY dtTotal (whether 1 second or 100 years) and is strictly partition-invariant!
- */
-function advanceHydrologyAnalytical(state, topoOrder, upstreamOf, downstreamOf, dtTotal) {
-  let remaining = dtTotal;
-  const EPS = 1e-9;
-  let guardSteps = 0;
-  const maxGuardSteps = Math.max(16, topoOrder.length * 8);
-
-  while (remaining > EPS && guardSteps < maxGuardSteps) {
-    guardSteps++;
-    updateInstantaneousRates(state, topoOrder, upstreamOf, downstreamOf);
-
-    // Determine the earliest threshold crossing time dtStep <= remaining across the network
-    let dtStep = remaining;
-    for (const pid of topoOrder) {
-      const s = state.get(pid);
-      // Case 1: Reach is below crest_volume_m3 and filling (k_eff = 0 until it reaches crest)
-      if (s.volume_m3 < s.crest_volume_m3 - EPS && s.inflow_m3s > EPS) {
-        const tToCrest = (s.crest_volume_m3 - s.volume_m3) / s.inflow_m3s;
-        if (tToCrest > EPS && tToCrest < dtStep) dtStep = tToCrest;
-      }
-      // Case 2: Sluice is closed (k === 0) and reach is filling toward max_volume_m3 (spillway overtop)
-      if (s.k === 0 && s.volume_m3 < s.max_volume_m3 - EPS && s.inflow_m3s > EPS) {
-        const tToMax = (s.max_volume_m3 - s.volume_m3) / s.inflow_m3s;
-        if (tToMax > EPS && tToMax < dtStep) dtStep = tToMax;
-      }
+// Evolve weakly connected components independently, bounding matrix size while
+// permitting any number of separate resident parcels.
+function advanceHydrologyAnalytical(state, order, upstream, downstream, dt) {
+  const seen = new Set();
+  for (const seed of order) {
+    if (seen.has(seed)) continue;
+    const members = new Set(), stack = [seed];
+    while (stack.length) {
+      const id = stack.pop();
+      if (seen.has(id)) continue;
+      seen.add(id); members.add(id);
+      stack.push(...upstream.get(id), ...downstream.get(id));
     }
-
-    // Advance the DAG analytically across dtStep
-    // Each node i produces an analytical outflow function over tau in [0, dtStep]:
-    //   Q_out,i(tau) = c_i + sum_m a_{i,m} * exp(-r_m * tau)
-    // which integrates to an exact volume and feeds downstream reaches!
-    const outflowModes = new Map(); // pid -> { constRate: number, expTerms: Array<{ coeff: number, rate: number }> }
-
-    for (const pid of topoOrder) {
-      const s = state.get(pid);
-      let inConst = s.source_inflow_m3s;
-      const inExp = [];
-
-      for (const upId of upstreamOf.get(pid)) {
-        const upOut = outflowModes.get(upId);
-        const split = 1 / Math.max(1, downstreamOf.get(upId).length);
-        if (upOut) {
-          inConst += upOut.constRate * split;
-          for (const term of upOut.expTerms) {
-            if (Math.abs(term.coeff) > 1e-12) {
-              inExp.push({ coeff: term.coeff * split, rate: term.rate });
-            }
-          }
-        }
-      }
-
-      // Exact total inflow volume entering reach `pid` during [0, dtStep]:
-      let deltaInflowVol = inConst * dtStep;
-      for (const term of inExp) {
-        deltaInflowVol += term.rate > EPS
-          ? term.coeff * ((1 - Math.exp(-term.rate * dtStep)) / term.rate)
-          : term.coeff * dtStep;
-      }
-      deltaInflowVol = Math.max(0, deltaInflowVol);
-
-      const vStart = s.volume_m3;
-      const activeFlowing = s.k > 0 && (vStart > s.crest_volume_m3 - EPS || inConst > EPS);
-
-      if (!activeFlowing) {
-        // Sluice closed or below crest: stores incoming water up to max_volume_m3; any excess overtops spillway
-        const vUnclamped = vStart + deltaInflowVol;
-        if (vUnclamped <= s.max_volume_m3 + EPS) {
-          s.volume_m3 = clamp(vUnclamped, 0, s.max_volume_m3);
-          s.total_inflow_m3 += deltaInflowVol;
-          outflowModes.set(pid, { constRate: 0, expTerms: [] });
-        } else {
-          const stored = Math.max(0, s.max_volume_m3 - vStart);
-          const spilled = Math.max(0, deltaInflowVol - stored);
-          s.volume_m3 = s.max_volume_m3;
-          s.total_inflow_m3 += deltaInflowVol;
-          s.total_outflow_m3 += spilled;
-          outflowModes.set(pid, { constRate: spilled / dtStep, expTerms: [] });
-        }
-      } else {
-        // Active linear reservoir above crest_volume_m3 with rate k = s.k:
-        // dU/dtau + k * U = inConst + sum_m c_m * exp(-r_m * tau)
-        const k = s.k;
-        const u0 = Math.max(0, vStart - s.crest_volume_m3);
-        const uInf = inConst / k;
-        let uEnd = uInf + (u0 - uInf) * Math.exp(-k * dtStep);
-
-        const nextExpTerms = [];
-        let selfCoeff = k * (u0 - uInf);
-
-        for (const term of inExp) {
-          const r = term.rate;
-          const c = term.coeff;
-          if (Math.abs(k - r) > 1e-7) {
-            const factor = c / (k - r);
-            uEnd += factor * (Math.exp(-r * dtStep) - Math.exp(-k * dtStep));
-            nextExpTerms.push({ coeff: k * factor, rate: r });
-            selfCoeff -= k * factor;
-          } else {
-            // Near-resonant rate k ≈ r: use exact limit (c * tau) * exp(-k * tau) integrated
-            const avgRate = 0.5 * (k + r);
-            const contrib = c * dtStep * Math.exp(-avgRate * dtStep);
-            uEnd += contrib;
-            selfCoeff += (k * contrib) / Math.max(EPS, Math.exp(-k * dtStep));
-          }
-        }
-        if (Math.abs(selfCoeff) > 1e-12) {
-          nextExpTerms.push({ coeff: selfCoeff, rate: k });
-        }
-
-        uEnd = Math.max(0, uEnd);
-        let vEnd = s.crest_volume_m3 + uEnd;
-        if (vEnd > s.max_volume_m3) {
-          vEnd = s.max_volume_m3;
-        }
-
-        // Exact conservation: outflow volume = inflow volume + vStart - vEnd
-        let deltaOutflowVol = deltaInflowVol + vStart - vEnd;
-        if (deltaOutflowVol < 0) {
-          // Guard against tiny floating-point rounding below zero
-          vEnd = clamp(vStart + deltaInflowVol, 0, s.max_volume_m3);
-          deltaOutflowVol = 0;
-        }
-
-        s.volume_m3 = vEnd;
-        s.total_inflow_m3 += deltaInflowVol;
-        s.total_outflow_m3 += deltaOutflowVol;
-
-        // Rescale analytical mode coefficients if needed so integral matches deltaOutflowVol exactly
-        let rawModeVol = inConst * dtStep;
-        for (const t of nextExpTerms) {
-          rawModeVol += t.rate > EPS ? t.coeff * ((1 - Math.exp(-t.rate * dtStep)) / t.rate) : t.coeff * dtStep;
-        }
-        if (rawModeVol > EPS && Math.abs(rawModeVol - deltaOutflowVol) > 1e-7) {
-          const scale = deltaOutflowVol / rawModeVol;
-          outflowModes.set(pid, {
-            constRate: inConst * scale,
-            expTerms: nextExpTerms.map((t) => ({ coeff: t.coeff * scale, rate: t.rate })),
-          });
-        } else {
-          outflowModes.set(pid, { constRate: inConst, expTerms: nextExpTerms });
-        }
-      }
-    }
-
-    remaining -= dtStep;
+    advanceReservoirComponent(state, order.filter(id => members.has(id)), upstream, downstream, dt);
   }
-
-  updateInstantaneousRates(state, topoOrder, upstreamOf, downstreamOf);
+  updateInstantaneousRates(state, order, upstream, downstream);
 }
 
 // ============================================================================
@@ -692,68 +557,104 @@ export function computeRoomSupportState(world, placeId) {
 // 4. SOIL MOISTURE & LIVING FLORA / TREE EVOLUTION
 // ============================================================================
 
-function computeSoilMoisture(world, place, tSec, hydroReachState) {
+// Integral of the moisture-dependent growth factor along an exponential segment.
+// Split at clamp crossings; applying endpoint moisture over the entire interval
+// makes a tree grow differently merely because somebody committed an action.
+function moistureGrowthIntegral(m0, target, seconds) {
+  const cuts = [0, seconds];
+  for (const level of [0.0775, 0.71]) {
+    const ratio = (level - target) / (m0 - target);
+    if (ratio > 0 && ratio < 1) {
+      const crossing = -SOIL_TAU_SEC * Math.log(ratio);
+      if (crossing > 0 && crossing < seconds) cuts.push(crossing);
+    }
+  }
+  cuts.sort((a, b) => a - b);
+  let integral = 0;
+  for (let i = 1; i < cuts.length; i++) {
+    const a = cuts[i - 1], b = cuts[i], dt = b - a;
+    const mid = target + (m0 - target) * Math.exp(-(a + b) / (2 * SOIL_TAU_SEC));
+    if (mid <= 0.0775) integral += 0.05 * dt;
+    else if (mid >= 0.71) integral += 1.2 * dt;
+    else integral += ((target - 0.05) * dt + (m0 - target) * SOIL_TAU_SEC
+      * (Math.exp(-a / SOIL_TAU_SEC) - Math.exp(-b / SOIL_TAU_SEC))) / 0.55;
+  }
+  return integral;
+}
+
+function computeSoilMoisture(world, place, tSec, hydroReachState, growthStartSec = null) {
   const pConfig = place?.physics_config || {};
   const tOrigin = parseIsoSeconds(pConfig.moisture_updated_at || worldOriginIso(world), tSec);
   const m0 = typeof pConfig.soil_moisture === "number" ? clamp(pConfig.soil_moisture, 0, 1) : 0.35;
-
-  const dtTotal = Math.max(0, tSec - tOrigin);
-  if (dtTotal === 0) {
-    const atm = evaluateAtmosphere(world, place, tSec);
-    return { soil_moisture: roundTo(m0, 4), soil_moisture_raw: roundTo(m0, 9), moisture_pct: Math.round(m0 * 100), atm };
+  const start = growthStartSec ?? tOrigin;
+  let cursor = tOrigin, m = m0, growthSeconds = 0, lastEpoch = pConfig.soil_epoch ?? null;
+  const period = WEATHER_CYCLE_EPOCHS * SYNOPTIC_EPOCH_SEC;
+  let cycleStart = tOrigin, cycleM = m0, cycleGrowth = 0, cycleSeepage = null;
+  let frozenSeepage = null, approximated = Boolean(pConfig.history_approximation);
+  let stationaryHydrology = null;
+  function riverAt(second) {
+    const map = stationaryHydrology || solveHydrologyNetwork(world, second);
+    // With constant controls and sources, zero derivative at EVERY node is a
+    // steady solution. A dry downstream node alone is not proof: a wave may
+    // still be travelling from an upstream reach.
+    if ([...map.values()].every(r => Math.abs(r.inflow_m3s - r.discharge_m3s) < 1e-11)) stationaryHydrology = map;
+    return map.get(place.id);
   }
-
-  // Canonical synoptic grid stepping over up to MAX_WEATHER_HISTORY_EPOCHS (14 days = 78*tau_soil),
-  // guaranteeing both bounded O(1) execution and partition equivalence across t0 -> t1 -> t2!
-  const windowSec = MAX_WEATHER_HISTORY_EPOCHS * SYNOPTIC_EPOCH_SEC;
-  let cursor = tOrigin;
-  let m = m0;
-
-  if (dtTotal > windowSec) {
-    const jumpSec = dtTotal - windowSec;
-    const seepageEquil = hydroReachState ? clamp(hydroReachState.volume_m3 / Math.max(1, hydroReachState.max_volume_m3) * 0.6, 0, 0.5) : 0;
-    const longTermEquil = clamp(0.28 + seepageEquil, 0.05, 0.95);
-    m = longTermEquil + (m - longTermEquil) * Math.exp(-jumpSec / SOIL_TAU_SEC);
-    cursor = tSec - windowSec;
+  function advance(target, end) {
+    const a = Math.max(cursor, start), b = Math.max(a, end);
+    const atA = target + (m - target) * Math.exp(-(a - cursor) / SOIL_TAU_SEC);
+    if (end > a) growthSeconds += moistureGrowthIntegral(atA, target, b - a);
+    m = target + (m - target) * Math.exp(-(end - cursor) / SOIL_TAU_SEC);
+    cursor = end;
   }
-
   while (cursor < tSec - 1e-6) {
-    const epochIdx = Math.floor(cursor / SYNOPTIC_EPOCH_SEC);
-    const nextGrid = (epochIdx + 1) * SYNOPTIC_EPOCH_SEC;
-    const stepEnd = Math.min(tSec, nextGrid);
-    const dt = stepEnd - cursor;
-    const epochMid = (epochIdx + 0.5) * SYNOPTIC_EPOCH_SEC;
-    const atm = evaluateAtmosphere(world, place, epochMid);
-
-    const rainGain = (atm.rain_mm_hr / 15.0) * 0.65;
-    const seepageGain = hydroReachState
-      ? clamp((hydroReachState.volume_m3 / Math.max(1, hydroReachState.area_m2)) * 0.22, 0, 0.45)
-      : 0;
-    const evapLoss = atm.sunlight * 0.32 + (atm.wind_speed_ms / 15.0) * 0.12;
-    const targetM = clamp(0.18 + rainGain + seepageGain - evapLoss, 0.02, 1.0);
-
-    m = targetM + (m - targetM) * Math.exp(-dt / SOIL_TAU_SEC);
-    cursor = stepEnd;
+    const epoch = Math.floor(cursor / SYNOPTIC_EPOCH_SEC);
+    const end = Math.min(tSec, (epoch + 1) * SYNOPTIC_EPOCH_SEC, cycleStart + period);
+    const atm = evaluateAtmosphere(world, place, (epoch + 0.5) * SYNOPTIC_EPOCH_SEC);
+    // Hold river seepage through a UTC hour. Carry that one sampled driver over
+    // partial-hour commits/restarts; don't replace history with endpoint depth.
+    if (lastEpoch?.index !== epoch) {
+      const reach = frozenSeepage === null ? riverAt(cursor) : null;
+      lastEpoch = { index: epoch, seepage: frozenSeepage ?? (reach ? clamp(reach.volume_m3 / Math.max(1, reach.area_m2) * 0.22, 0, 0.45) : 0) };
+    }
+    cycleSeepage ??= lastEpoch.seepage;
+    const rainGain = (atm.rain_mm_hr / 15) * 0.65;
+    const evapLoss = atm.sunlight * 0.32 + (atm.wind_speed_ms / 15) * 0.12;
+    advance(clamp(0.18 + rainGain + lastEpoch.seepage - evapLoss, 0.02, 1), end);
+    if (cursor >= cycleStart + period - 1e-6) {
+      // After one climate cycle soil forgets its initial condition by exp(-28).
+      // Once periodic and river seepage stationary, repeat the measured cycle
+      // integral in O(1); visiting daily cannot manufacture different growth.
+      if (cycleStart >= start && Math.abs(m - cycleM) < 1e-9 && Math.abs(lastEpoch.seepage - cycleSeepage) < 1e-10) {
+        const repeats = Math.floor((tSec - cursor) / period);
+        growthSeconds += (growthSeconds - cycleGrowth) * repeats;
+        cursor += repeats * period;
+        if (repeats > 0) lastEpoch = { ...lastEpoch, index: Math.floor(cursor / SYNOPTIC_EPOCH_SEC) - 1 };
+      } else if (cursor - tOrigin >= 2 * period && frozenSeepage === null && tSec - cursor > period) {
+        // Very slow/transient river forcing has not settled after 28 days.
+        // Bound cost by freezing its remaining ecological seepage at the
+        // projected final value. Hydrology itself remains fully evolved.
+        // This approximation is explicitly returned and persisted as metadata.
+        frozenSeepage = hydroReachState ? clamp(hydroReachState.volume_m3 / Math.max(1, hydroReachState.area_m2) * 0.22, 0, 0.45) : 0;
+        lastEpoch = null;
+        approximated = true;
+      }
+      cycleStart = cursor; cycleM = m; cycleGrowth = growthSeconds; cycleSeepage = null;
+    }
   }
-
   const rawM = roundTo(clamp(m, 0, 1), 9);
-  const finalM = roundTo(rawM, 4);
-  const atm = evaluateAtmosphere(world, place, tSec);
-  return { soil_moisture: finalM, soil_moisture_raw: rawM, moisture_pct: Math.round(finalM * 100), atm };
+  return { soil_moisture: roundTo(rawM, 4), soil_moisture_raw: rawM,
+    moisture_pct: Math.round(rawM * 100), atm: evaluateAtmosphere(world, place, tSec),
+    growth_days: growthSeconds / 86400, soil_epoch: lastEpoch, history_approximation: approximated };
 }
 
-function projectFloraState(world, place, thing, tSec, soilMoisture, atm) {
+function projectFloraState(world, place, thing, tSec, soilMoisture, atm, growthDays) {
   const m = thing.mechanics;
-  const t0 = parseIsoSeconds(m.updated_at || thing.createdAt || worldOriginIso(world), tSec);
-  const dtDays = Math.max(0, (tSec - t0) / 86400);
-
   const b0 = Math.max(0.05, Number(m.biomass_kg) || 0.25);
   const bMax = Math.max(1.0, Number(m.max_biomass_kg) || 120.0);
   const baseGrowthRatePerDay = Math.max(0.01, Number(m.growth_rate_day) || 0.18);
 
-  // Growth factor depends on soil moisture and average insolation
-  const moistureFactor = soilMoisture < 0.1 ? 0.05 : clamp((soilMoisture - 0.05) / 0.55, 0.05, 1.2);
-  const effectiveGrowth = baseGrowthRatePerDay * moistureFactor * dtDays;
+  const effectiveGrowth = baseGrowthRatePerDay * growthDays;
 
   // Exact logistic saturation solution: B(t) = B_max / (1 + ((B_max / B_0) - 1) * exp(-r * dt))
   const ratio0 = Math.max(0, bMax / b0 - 1);
@@ -801,7 +702,7 @@ export function projectPlacePhysics(world, placeId, nowIso = new Date().toISOStr
   const tSec = parseIsoSeconds(nowIso, Date.now() / 1000);
   const hydroMap = solveHydrologyNetwork(world, tSec);
   const reachState = hydroMap.get(placeId) || null;
-  const { soil_moisture, moisture_pct, atm } = computeSoilMoisture(world, p, tSec, reachState);
+  const { soil_moisture, moisture_pct, atm, history_approximation } = computeSoilMoisture(world, p, tSec, reachState);
 
   const bounds = Array.isArray(p.physics_config?.bounds) && p.physics_config.bounds.length === 3
     ? p.physics_config.bounds.map(Number)
@@ -821,6 +722,7 @@ export function projectPlacePhysics(world, placeId, nowIso = new Date().toISOStr
     rain_mm_hr_int: atm.rain_mm_hr_int,
     soil_moisture,
     moisture_pct,
+    history_approximation,
   };
 
   const sensors = {
@@ -987,9 +889,10 @@ export function projectThingPhysics(world, thingId, nowIso = new Date().toISOStr
   if (m.role === "flora") {
     const hydroMap = solveHydrologyNetwork(world, tSec);
     const reachState = hydroMap.get(thing.placeId) || null;
-    const { soil_moisture_raw, atm } = computeSoilMoisture(world, p, tSec, reachState);
-    const { biomass_raw_kg: _raw, ...publicFlora } = projectFloraState(world, p, thing, tSec, soil_moisture_raw, atm);
-    flora = publicFlora;
+    const start = parseIsoSeconds(m.updated_at || thing.createdAt || worldOriginIso(world), tSec);
+    const { soil_moisture_raw, atm, growth_days, history_approximation } = computeSoilMoisture(world, p, tSec, reachState, start);
+    const { biomass_raw_kg: _raw, ...publicFlora } = projectFloraState(world, p, thing, tSec, soil_moisture_raw, atm, growth_days);
+    flora = { ...publicFlora, history_approximation };
     sensors.moisture_pct = flora.moisture_pct;
     sensors.biomass_g = flora.biomass_g;
     sensors.canopy_pct = flora.canopy_pct;
@@ -1121,34 +1024,37 @@ export function commitWorldPhysicsAt(world, nowIso) {
   const iso = new Date(tSec * 1000).toISOString();
 
   const hydroMap = solveHydrologyNetwork(world, tSec);
-  if (hydroMap.size > 0 && world.hydrology?.reaches) {
-    for (const [pid, state] of hydroMap.entries()) {
-      const r = world.hydrology.reaches[pid];
-      if (!r) continue;
-      r.volume_m3 = roundTo(state.volume_m3, 9);
-      r.total_inflow_m3 = roundTo(state.total_inflow_m3, 9);
-      r.total_outflow_m3 = roundTo(state.total_outflow_m3, 9);
-      r.aperture = roundTo(state.aperture, 4);
-      r.crest_height_m = roundTo(state.crest_height_m, 4);
-      r.updated_at = iso;
-    }
+  // Project every soil/flora anchor against the OLD world before replacing any
+  // anchors; sampling after the hydro commit would reuse future water levels.
+  const updates = [];
+  for (const p of world.places || []) {
+    if (p.destroyedAt || !p.physics_config) continue;
+    const reach = hydroMap.get(p.id) || null;
+    const soil = computeSoilMoisture(world, p, tSec, reach);
+    const flora = liveThingsAt(world, p.id).filter(t => t.mechanics?.role === "flora").map(thing => {
+      const start = parseIsoSeconds(thing.mechanics.updated_at || thing.createdAt || worldOriginIso(world), tSec);
+      const growth = computeSoilMoisture(world, p, tSec, reach, start);
+      return [thing, projectFloraState(world, p, thing, tSec, soil.soil_moisture_raw, soil.atm, growth.growth_days)];
+    });
+    updates.push([p, soil, flora]);
   }
-
-  if (Array.isArray(world.places)) {
-    for (const p of world.places) {
-      if (p.destroyedAt || !p.physics_config) continue;
-      const reachState = hydroMap.get(p.id) || null;
-      const { soil_moisture_raw, atm } = computeSoilMoisture(world, p, tSec, reachState);
-      p.physics_config.soil_moisture = soil_moisture_raw;
-      p.physics_config.moisture_updated_at = iso;
-
-      for (const thing of liveThingsAt(world, p.id)) {
-        if (thing.mechanics?.role === "flora") {
-          const fl = projectFloraState(world, p, thing, tSec, soil_moisture_raw, atm);
-          thing.mechanics.biomass_kg = fl.biomass_raw_kg;
-          thing.mechanics.updated_at = iso;
-        }
-      }
+  for (const [pid, state] of hydroMap) {
+    const r = world.hydrology.reaches[pid];
+    r.volume_m3 = roundTo(state.volume_m3, 9);
+    r.total_inflow_m3 = roundTo(state.total_inflow_m3, 9);
+    r.total_outflow_m3 = roundTo(state.total_outflow_m3, 9);
+    r.aperture = roundTo(state.aperture, 4);
+    r.crest_height_m = roundTo(state.crest_height_m, 4);
+    r.updated_at = iso;
+  }
+  for (const [p, soil, flora] of updates) {
+    p.physics_config.soil_moisture = soil.soil_moisture_raw;
+    p.physics_config.moisture_updated_at = iso;
+    if (soil.soil_epoch) p.physics_config.soil_epoch = soil.soil_epoch;
+    if (soil.history_approximation) p.physics_config.history_approximation = true;
+    for (const [thing, projected] of flora) {
+      thing.mechanics.biomass_kg = projected.biomass_raw_kg;
+      thing.mechanics.updated_at = iso;
     }
   }
 }
@@ -1187,6 +1093,21 @@ export function actuatePhysics(world, {
   }
   if (action === "couple_channel") {
     return handleCoupleChannel(world, { actorRow, here, input, nowIso, may, emit, adj });
+  }
+  if (action === "uncouple_channel") {
+    const from = livePlace(world, String(input.fromPlaceId || here.id));
+    const to = livePlace(world, String(input.toPlaceId || input.targetId || ""));
+    if (!from || !to || from.id === to.id) return fail("not_found", "Both channel endpoints must exist.", 404);
+    if (![from.id, to.id].includes(here.id) || here.ownerHandle !== actorRow.handle) {
+      return fail("forbidden", "Stand on your own endpoint to sever a channel. The other owner's permission is unnecessary.", 403);
+    }
+    const channels = world.hydrology?.channels || [];
+    if (!channels.some(c => c.from === from.id && c.to === to.id)) return fail("not_found", "No such channel.", 404);
+    commitWorldPhysicsAt(world, nowIso);
+    world.hydrology.channels = channels.filter(c => c.from !== from.id || c.to !== to.id);
+    return { ok: true, event: emit("uncouple_channel", `${actorRow.handle} severed a water channel at ${here.name}.`, here.id, actorRow.handle),
+      channel: { from: from.id, to: to.id }, upstream_physical: projectPlacePhysics(world, from.id, nowIso),
+      downstream_physical: projectPlacePhysics(world, to.id, nowIso) };
   }
   if (action === "actuate") {
     return handleActuate(world, { actorRow, here, input, nowIso, may, emit });
@@ -1237,7 +1158,7 @@ function handleConfigurePhysics(world, { actorRow, here, input, nowIso, may, emi
         !Number.isFinite(sourceInflow) || sourceInflow < 0 || sourceInflow > 1000 ||
         !Number.isFinite(crestHeight) || crestHeight < 0 || crestHeight > maxDepth ||
         !Number.isFinite(aperture) || aperture < 0 || aperture > 1 ||
-        !Number.isFinite(conductance) || conductance <= 0 || conductance > 1
+        !Number.isFinite(conductance) || conductance < 0.0001 || conductance > 1
       ) {
         return fail("bad_input", "Invalid hydrology parameters.", 400);
       }
@@ -1245,7 +1166,7 @@ function handleConfigurePhysics(world, { actorRow, here, input, nowIso, may, emi
     }
 
     commitWorldPhysicsAt(world, nowIso);
-    here.physics_config ??= {};
+    here.physics_config ??= { soil_moisture: 0.35, moisture_updated_at: nowIso };
     if (input.exposure !== undefined) {
       here.physics_config.exposure = input.exposure;
     }
@@ -1396,6 +1317,7 @@ function handleConfigurePhysics(world, { actorRow, here, input, nowIso, may, emi
     }
 
     commitWorldPhysicsAt(world, nowIso);
+    if (spec.biomass_kg === undefined && thing.mechanics?.role === "flora") next.biomass_kg = thing.mechanics.biomass_kg;
     thing.mechanics = next;
     commitWorldPhysicsAt(world, nowIso);
     const event = emit("configure_physics", `${actorRow.handle} configured mechanics on ${thing.name}.`, here.id, actorRow.handle);
@@ -1437,6 +1359,17 @@ function handleCoupleChannel(world, { actorRow, here, input, nowIso, may, emit, 
 
   // Reject cycles in the hydrological graph
   const existingChannels = world.hydrology.channels || [];
+  const component = new Set(), pending = [fromId, toId];
+  while (pending.length) {
+    const id = pending.pop();
+    if (component.has(id)) continue;
+    component.add(id);
+    for (const ch of existingChannels) {
+      if (ch.from === id) pending.push(ch.to);
+      if (ch.to === id) pending.push(ch.from);
+    }
+  }
+  if (component.size > MAX_COUPLED_REACHES) return fail("capacity", `A coupled component may contain at most ${MAX_COUPLED_REACHES} reaches.`, 409);
   const visited = new Set([fromId]);
   const stack = [toId];
   while (stack.length > 0) {
@@ -1747,10 +1680,11 @@ export function physicsContract() {
     schema: PHYSICS_SCHEMA,
     modeled_fidelity: {
       spatial_and_mechanics: "Deterministic 3D AABB occupancy, collision rejection, vertical support stacking with footprint center-of-mass stability, Hookean spring/beam deflection, mechanical-sluice latch coupling, and rigid-body collision impulse with plastic work and damped acoustic resonance. Not a general 3D triangle-mesh engine.",
-      hydrology: "Directed acyclic conservation network of reaches with piecewise-analytical linear-reservoir / Nash-cascade integration over Δt. Guarantees nonnegative volume, exact water conservation, O(1) long-absence bounds, and partition/restart equivalence.",
-      atmosphere_and_flora: "Deterministic UTC solar irradiance, seeded synoptic wind/rain cells, exponential soil-moisture water balance (rain + river seepage - evapotranspiration), and logistic tree biomass/canopy growth with wind sway.",
+      hydrology: "Directed acyclic linear reservoirs with matrix-exponential evolution, shared conserved flow integrals, and numerical threshold detection. Components are bounded at 32 reaches. Restart/conservation tests use 1e-5 m3 (1e-4 for long/varied cases); not a universal or cross-platform exactness claim.",
+      atmosphere_and_flora: "UTC sunlight and a seeded repeating 14-day hourly climate. Moisture integrates hourly weather/river seepage; logistic growth integrates moisture over time. Settled climate cycles fast-forward. Unsettled river forcing beyond 28 days may use projected final seepage for remaining ecology; history_approximation reports and retains that limit.",
     },
-    actions: ["configure_physics", "couple_channel", "actuate"],
+    bounds: { max_coupled_reaches: MAX_COUPLED_REACHES, weather_cell_seconds: SYNOPTIC_EPOCH_SEC, weather_cycle_days: 14 },
+    actions: ["configure_physics", "couple_channel", "uncouple_channel", "actuate"],
     composable_ops: ["actuate"],
     actuate_ops: ["set_sluice", "set_weir", "place_on", "remove_from", "move_to", "strike"],
     place_sensors: [...ALLOWED_PLACE_SENSORS],
@@ -1759,6 +1693,7 @@ export function physicsContract() {
       observation_writes: false,
       unsolicited_thing_backfill: false,
       go_home_unblockable: true,
+      uncouple: "either endpoint owner, standing on their endpoint, may sever without other-owner permission; old flow advances first",
       cross_place_coupling_permission: "requires authority or public couple_environment door on both upstream and downstream places; enclaves default closed",
     },
   };

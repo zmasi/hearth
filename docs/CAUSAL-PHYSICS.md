@@ -15,15 +15,14 @@ Hearth runs on serverless Vercel Functions backed by a single transactional Post
   - **Explicit Scope:** This is a deterministic reduced-coordinate 3D AABB, support-stack, elastic-deflection, and collision-impulse solver — not a 6-DoF triangle-mesh rigid-body engine.
 - **Coupled Multi-Place Hydrology:**
   - Places opt into hydrological reaches (`elevation_m`, `area_m2`, `max_depth_m`, `source_inflow_m3s`, `crest_height_m`, `aperture`, `conductance_s`) linked across adjacent places by directed channels (`couple_channel`).
-  - Reaches evolve via an **event-driven piecewise-analytical linear-reservoir / Nash-cascade solver** (`solveHydrologyNetwork`). Threshold crossings (weir crest $V_{\text{crest}}$ and spillway capacity $V_{\max}$) are solved at their exact analytical root times.
-  - **Exact Conservation & Nonnegativity:** For every reach $i$ and every elapsed interval $\Delta t \ge 0$,
-    $$V_{\text{outflow},i}(\Delta t) \equiv V_{\text{inflow},i}(\Delta t) + V_i(0) - V_i(\Delta t), \qquad 0 \le V_i(t) \le V_{\max,i}.$$
-  - **Partition / Restart Equivalence:** Because $e^{-k(\Delta t_1 + \Delta t_2)} \equiv e^{-k\Delta t_1}e^{-k\Delta t_2}$ and downstream reaches integrate upstream exponential outflow modes analytically, evolving $t_0 \to t_1 \to t_2$ across mutations or process restarts equals evolving $t_0 \to t_2$ in a single step.
-  - **$O(1)$ Long-Absence Bounds:** The analytical event loop takes at most $2 N_{\text{reaches}}$ steps regardless of whether $\Delta t$ is 1 second or 180 days.
+  - `solveHydrologyNetwork` evolves connected components with a matrix exponential inside each filling, flowing or capped regime. This retains equal-rate cascade terms and avoids division by nearly equal rates. Thresholds use a logarithmic sampling grid and numerical bisection, not an exact symbolic root proof.
+  - Water entering downstream reaches comes from the same integrated outflow used upstream; divided channels split that outflow equally. Volumes stay in `[0, capacity]` apart from boundary rounding. The tests check mass balance and partition/restart differences within **0.00001 m³**, or **0.0001 m³** for the long-absence and varied-graph cases.
+  - A connected component has at most **32 reaches**, bounding matrix cost. Separate components are independent. Work scales with graph/rate/time scales, not one tick per elapsed second. The tested 180-day fixture is bounded; this is not unconditional O(1), bit identity across platforms, or a proof for every possible graph. A convergence failure refuses the calculation rather than silently dropping elapsed time.
 - **Atmosphere, Soil Moisture & Living Flora:**
   - Deterministic UTC solar altitude, phase (`night`, `dawn`, `day`, `dusk`), and irradiance (`sunlight_pct`), plus seeded synoptic wind (`wind_speed_ms`, `wind_direction_deg`) and rain (`rain_mm_hr`) attenuated by place exposure (`open`, `canopy`, `sheltered`).
-  - Exponential soil-moisture water balance (`soil_moisture`, `moisture_pct`) driven by rain + river-reach seepage minus solar/wind evapotranspiration across canonical 15-minute synoptic epochs.
-  - Logistic tree/flora biomass growth (`biomass_kg`, `canopy_pct`, `stage`) and wind-induced canopy sway (`sway_deg`, `sway_mdeg`, `wind_stress_pct`).
+  - Exponential soil-moisture water balance (`soil_moisture`, `moisture_pct`) driven by rain + river-reach seepage minus solar/wind evapotranspiration across canonical **one-hour UTC cells**. The declared climate repeats every **14 days**, seeded by ledger genesis and weather region, independently of live topology. River seepage is sampled at each hour boundary; its current-hour driver survives intermediate commits/restarts.
+  - Logistic tree/flora biomass growth (`biomass_kg`, `canopy_pct`, `stage`) integrates the moisture-dependent rate through the elapsed interval, including analytic clamp crossings; it does not multiply an endpoint growth rate by the whole interval. Wind drives canopy sway.
+  - Once soil and seepage settle into their climate cycle, complete cycles fast-forward using the cycle's growth integral. Synthetic 30- and 180-day jumps agree with daily anchors within **0.0001 kg**. If river forcing still has not settled after 28 days and more than another cycle remains, ecology uses the projected final seepage for the remaining interval and sets **`history_approximation: true`** on the environment/flora projection. A committed approximation retains that marker. Hydrology still evolves its full interval. This case has no uniform equivalence claim to daily ecology commits; the marker is not a promise of exact historical weather or growth.
 
 ## 2. Constitutional & Sovereignty Guarantees
 
@@ -33,9 +32,16 @@ Hearth runs on serverless Vercel Functions backed by a single transactional Post
    - `make` creates plain things with exact keys `["id", "name", "body", "ownerHandle", "placeId", "createdAt"]`. Only things explicitly configured via `configure_physics` or `actuate` (or carrying `fields.open`) project a `thing.physical` DTO.
 3. **Sovereign Cross-Place Coupling (`couple_environment`):**
    - `couple_channel` requires adjacency (`parent`, `child`, or `portal`), non-increasing elevation ($z_{\text{from}} \ge z_{\text{to}}$), DAG acyclicity, and authority on **both** places (`set_local_law` or `couple_environment: "public"`).
+   - Lazy physical mutations may advance evolved anchors throughout the coupled world, including another owner's parcel. That applies already-authorized physical evolution; it does not confer editing or vault access.
+   - `uncouple_channel` lets either endpoint owner sever while standing on their own endpoint, even when either coupling door is closed. Existing flow is committed first; only subsequent transfer stops. Future re-coupling still needs both sides' authority.
    - Missing `couple_environment` evaluates to `"owner_only"` on owned land, `"public"` on `world`/`arrival`, and `"closed"` on personal enclaves and other unowned land. No resident can flood or drain a neighbor's parcel or enclave without their consent.
+   - Ordinary perception follows the existing observe/standing rule. The legacy public `/api/map` still includes public-register and physical projections without those per-place filters; these bags are **not private storage**. Trails applies its existing public-observation filter.
 4. **Unblockable `go_home`:**
    - Flooded reaches, closed doors, and colliding room bodies never block `go_home`.
+   - If a numerical projection is unavailable, ordinary perception returns an
+     explicit `unavailable: true` physical DTO without sensor values. That cannot
+     block `go_home` or turn a failed sensor into zero. Physical mutations still
+     refuse calculation failures and roll back.
 
 ## 3. Actions & Script Composition
 
@@ -111,3 +117,37 @@ Performs a physical operation (`set_sluice`, `set_weir`, `place_on`, `remove_fro
 - Verifies the target place or thing is live (not missing or destroyed) and has active physical sensors.
 - Uses `Object.hasOwn` against explicit sensor allowlists (`ALLOWED_PLACE_SENSORS`, `ALLOWED_THING_SENSORS`), rejecting prototype properties (`__proto__`, `constructor`, `toString`).
 - Refuses missing, destroyed, unobservable, or unconfigured targets with structured `{ ok: false, error_class, http_status, message }` rather than coercing to `0`.
+
+
+## Integrated execution, custody and recovery
+
+The actual handler injects the authenticated caller, current place, sensor reader,
+actuator and one UTC request instant captured **after** the PostgreSQL row lock.
+The alternate machine actuator form is also supported:
+
+```json
+{"do":"actuate","field":"set_sluice","of":"$target","to":"0.5"}
+```
+
+`field` names the actuator operation, not an arbitrary sensor to overwrite.
+The original `targetId/name/body` form remains valid, including in stored scripts.
+Mixed forms and host/identity fields are refused. The `aperture` name by itself
+is not an actuator. `set_sluice` accepts 0..1 as a ratio and values above 1 up to
+100 as percentages. `fields.open` takes precedence when present (`0` closed,
+`1` fully open, higher numbers as percent); clear it to return to the mechanical
+aperture. Register writes through a pin obey the caller's `use_thing` door.
+
+Changing `fields.open`, directly or in a composed program, advances old physics
+before writing the register. A later failing instruction restores fields,
+anchors, events, rates and depth together; PostgreSQL rolls back the row revision.
+Stored instruction grammar is checked at performance and during recovery.
+
+Physical anchors are JSON numbers rounded at stated fields (water totals and
+volumes to 9 decimals; controls typically 4). They are not integer-only storage.
+Uncertain-commit reconciliation compares the exact intended serialized world,
+not an independently recomputed physical trajectory. Recovery copies that state
+and verifies its complete digest; it does not replay events or invent weather
+history. The updated recovery validator checks optional physical/field bags,
+channel topology and both pin forms. Worlds without them remain unchanged.
+Use the recovery tooling from this release for snapshots containing these fields.
+There is no schema migration, resident-key collection or live demo population.

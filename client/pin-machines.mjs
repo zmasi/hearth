@@ -6,6 +6,10 @@
 export const MACHINE_OPS = new Set(["set", "add", "clear", "push", "when", "require", "actuate"]);
 export const WRITE_OPS = new Set(["set", "add", "clear", "push"]);
 export const GUARD_OPS = new Set(["when", "require"]);
+// Both shipped candidates used `actuate`: field/of/to is the machine form;
+// targetId/name/body is the ordinary action form. Never mix their key sets.
+export const isMachineStep = step => MACHINE_OPS.has(step?.do)
+  && (step.do !== "actuate" || Object.hasOwn(step, "field"));
 export const COMPARATORS = ["eq", "ne", "lt", "gte", "exists", "len_gte"];
 export const MACHINE_KEYS = new Set(["do", "field", "of", "bag", "to", "by", "eq", "ne", "lt", "gte", "exists", "len_gte", "want"]);
 export const HOST_FORBIDDEN = new Set(["actorHandle", "handle", "key", "keyHash", "asHandle", "bearer", "module", "code", "process", "env", "path", "command"]);
@@ -208,7 +212,7 @@ function compare(value, instruction, env) {
   return fail("script_failure", "A guard names exactly one comparison.", 400);
 }
 
-function assignField(record, name, value) {
+function assignField(record, name, value, beforeWrite) {
   if (!valueOk(value)) return fail("script_failure", "Mechanism field value exceeds bounds.", 400);
   const next = { ...(record.fields || {}) };
   if (!Object.hasOwn(next, name) && Object.keys(next).length >= MECHANISM_BOUNDS.max_fields) {
@@ -218,17 +222,19 @@ function assignField(record, name, value) {
   if (Buffer.byteLength(JSON.stringify(next), "utf8") > MECHANISM_BOUNDS.max_bag_bytes) {
     return fail("script_failure", "Mechanism fields exceed the bag byte limit.", 400);
   }
+  beforeWrite?.({ record, field: name });
   record.fields = next;
   return { ok: true, value };
 }
 
-function deleteField(record, name) {
+function deleteField(record, name, beforeWrite) {
   if (!record.fields || !Object.hasOwn(record.fields, name)) {
     if (record.fields && Object.keys(record.fields).length === 0) delete record.fields;
     return { ok: true, value: undefined };
   }
   const next = { ...record.fields };
   delete next[name];
+  beforeWrite?.({ record, field: name });
   if (Object.keys(next).length === 0) delete record.fields;
   else record.fields = next;
   return { ok: true, value: undefined };
@@ -238,7 +244,13 @@ export function runMachineStep(ctx) {
   const { instruction, env, world, standingId, pinTargetId } = ctx;
   const op = instruction.do;
   if (op === "actuate") {
-    return fail("script_failure", "No physical actuator is wired.", 409, { cause: { error_class: "no_actuator", message: "No physical actuator is wired.", http_status: 409 } });
+    if (typeof ctx.applyActuation !== "function") {
+      return fail("script_failure", "No physical actuator is wired.", 409, { cause: { error_class: "no_actuator", message: "No physical actuator is wired.", http_status: 409 } });
+    }
+    const located = locateHere(world, standingId, resolveId(instruction, env, pinTargetId));
+    if (!located || located.kind !== "thing") return guardFail("No such actuator thing here.", { missing: true });
+    const result = ctx.applyActuation({ targetId: located.record.id, op: instruction.field, value: subst(instruction.to, env) });
+    return result.ok ? { ok: true, step: { do: op, of: located.record.id, field: instruction.field, event: result.event || null } } : result;
   }
   if (GUARD_OPS.has(op)) {
     if (instruction.exists != null) {
@@ -288,7 +300,7 @@ export function runMachineStep(ctx) {
   if (!located) return guardFail("No such field target here.", { missing: true });
   const field = instruction.field;
   if (op === "clear") {
-    const cleared = deleteField(located.record, field);
+    deleteField(located.record, field, ctx.beforeWrite);
     return { ok: true, skipRest: false, step: { do: "clear", field, of: located.record.id } };
   }
   if (op === "add") {
@@ -298,7 +310,7 @@ export function runMachineStep(ctx) {
     if (typeof current !== "number") return fail("script_failure", "add only applies to integer fields.", 400);
     const next = current + delta;
     if (!inIntRange(next)) return fail("script_failure", "Mechanism integer overflow.", 400);
-    const written = assignField(located.record, field, next);
+    const written = assignField(located.record, field, next, ctx.beforeWrite);
     if (!written.ok) return written;
     return { ok: true, skipRest: false, step: { do: "add", field, of: located.record.id, value: next } };
   }
@@ -308,21 +320,21 @@ export function runMachineStep(ctx) {
     const current = located.record.fields && Object.hasOwn(located.record.fields, field) ? located.record.fields[field] : [];
     if (!Array.isArray(current)) return fail("script_failure", "push only applies to list fields.", 400);
     const next = current.concat([item.value]);
-    const written = assignField(located.record, field, next);
+    const written = assignField(located.record, field, next, ctx.beforeWrite);
     if (!written.ok) return written;
     return { ok: true, skipRest: false, step: { do: "push", field, of: located.record.id, value: next } };
   }
   if (op === "set") {
     const item = coerceScalar(subst(instruction.to, env), instruction.want);
     if (!item.ok) return item;
-    const written = assignField(located.record, field, item.value);
+    const written = assignField(located.record, field, item.value, ctx.beforeWrite);
     if (!written.ok) return written;
     return { ok: true, skipRest: false, step: { do: "set", field, of: located.record.id, value: item.value } };
   }
   return fail("script_failure", "Unknown machine op.", 400);
 }
 
-export function applyAdjust({ world, standingId, targetKind, targetId, field, op, to, by, as }) {
+export function applyAdjust({ world, standingId, targetKind, targetId, field, op, to, by, as, beforeWrite }) {
   if (!["thing", "place"].includes(targetKind) || typeof targetId !== "string" || !targetId) {
     return fail("bad_input", "adjust needs targetKind (thing or place), targetId, field, and op.", 400);
   }
@@ -342,5 +354,6 @@ export function applyAdjust({ world, standingId, targetKind, targetId, field, op
     pinTargetId: targetId,
     now: null,
     readPhysical: null,
+    beforeWrite,
   });
 }

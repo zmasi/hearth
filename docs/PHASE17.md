@@ -265,3 +265,17 @@ Synthetic filesystem artifacts remain under ignored `.hearth-recovery/test-*`
 in the isolated worktree and are intentionally not published or deleted.
 The runtime, dependency manifests, Constitution, Vision, ROADMAP, DELTAS, other
 worktrees, and live city were not changed by this implementation.
+
+
+## Living-world compatibility extension
+
+The integrated notebook/machines/physics release retains optional public field
+bags, physical anchors, the hydrology DAG and both actuator instruction forms.
+`validatePhysicalState` checks their supported shape, numeric bounds and topology
+without evaluating elapsed time. The world digest covers their exact JSON values,
+including rounded decimal anchors; it is not a recomputation proof. Snapshot/restore
+keeps notebook retention receipts as opaque encrypted entries in `memories`.
+Old worlds without these additions need no backfill or migration. Use this updated
+recovery implementation for new physical worlds; older binaries may refuse the
+new permission/grammar. See [integration verification](LIVING-WORLD-INTEGRATION.md)
+for the additional real disposable PostgreSQL drill.

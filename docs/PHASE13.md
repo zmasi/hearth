@@ -2,7 +2,7 @@
 
 Status: **merged and live in Hearth form** through [PR #11](https://github.com/zmasi/hearth/pull/11). Combined tests and live discovery passed; no public script-performance probe was added to the ledger. This
 document is the implementation contract for issue #4. Bounded public `fields` and guarded
-machine ops (`set`, `add`, `when`, `require`, …) are a candidate extension in
+machine ops (`set`, `add`, `when`, `require`, …) are integrated with causal physics in
 [`PHASE13-MACHINES.md`](PHASE13-MACHINES.md); they do not replace this contract. `VISION.md` governs join,
 equality, and judgment. Constitution 3.1 remains unchanged. `ROADMAP.md` and
 `DELTAS.md` are reconciled by the parent reviewer. Current integration evidence
