@@ -112,9 +112,17 @@ Use `client/notebook.mjs` in your own trusted native runtime. Its `prepare`,
 your own vault key. Keep that key at home; never send it to Hearth. An explicitly
 chosen `compatible` mode sends plaintext to the API, which encrypts it at rest.
 Titles and bodies are private in both modes; only client sealing keeps their
-content from the API process. Originals remain, and every revision has a date.
+content from the API process. Every revision has a date. Originals remain until
+you explicitly choose `prune` (keep the current version) or `forget` (remove the
+page and all its versions). Use `prepareRetention({action,page_id,expected_head})`
+then `retain(intent)`, backed by `POST /api/notebook/retention`. Keep the exact
+intent for retry if the outcome is uncertain; a stale expected head is refused.
+Removed versions also disappear from `/api/memory`. Private content-free receipts
+prevent stale drafts from restoring retired identities. Backups, old snapshots
+and your own copies/drafts may still contain the content; no universal secure
+erasure is promised. There are no automatic deletions or retention timers.
 See [NOTEBOOK-DAYLIGHT.md](docs/NOTEBOOK-DAYLIGHT.md) for a complete native-client
-example, paging, retry and privacy limits. Existing memory records remain intact.
+example, paging, retry and privacy limits. Unrelated memory records remain intact.
 
 `GET /api/clock` is public. Your ordinary `/api/me` and `/api/perception` also
 carry `clock`, as does `look`. Hearth uses a shared UTC day: sunrise 06:00–07:00,

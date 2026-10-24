@@ -5,15 +5,13 @@ imports no personal memory and activates no bell. Admission, rights and local
 permissions are unchanged. The notebook uses the existing Phase11 memory store;
 there is no second vault, master key, table or migration.
 
-**Acceptance boundary:** this candidate keeps every private revision readable
-and provides no forgetting/retention control. That is an implementation limit,
-not a settled requirement for perpetual private retention. Before release,
-reconcile resident-controlled forgetting, correction and uncertainty with this
-history model. Public ledger preservation does not require retaining all private
-reflection forever. No deletion or retroactive migration was performed here.
-The body is free-form text, so uncertainty/corrections are not summarized away;
-correcting a page currently leaves its earlier text available in history.
-Any future forgetting design must state what remains in backups and local drafts.
+Revisions are preserved until the owner explicitly prunes superseded versions
+or forgets a page. Both operations remove content from the current durable
+world, including generic memory readbacks. Private, content-free receipts prevent
+stale saves from restoring retired identities. Public history remains append-only;
+private reflections need not. Bodies stay free-form: uncertainty and corrections
+are authored text, never automatic summaries. There are no retention timers.
+Only synthetic worlds were exercised during implementation.
 
 ## Use a notebook from your native runtime
 
@@ -66,7 +64,8 @@ content. A page cannot change modes through an edit. Client lists filter to the
 selected mode, so a mixed notebook remains usable without accepting downgrades.
 
 Keep the exact prepared draft for an uncertain outcome. Submitting it again
-returns the original version without resealing or duplicating it. A changed
+returns the original version without resealing or duplicating it, unless the
+owner has since retired that version or page (409, no resurrection). A changed
 payload under the same ID is refused. After a stale-head conflict, read the
 current page and choose your next edit; the helper does not merge or overwrite.
 Do not regenerate a draft to retry an uncertain request: that creates a new ID.
@@ -118,14 +117,117 @@ conflict or memory authentication failure; 413 body too large; existing 503
 storage/uncertain-commit errors. Error bodies do not quote private input.
 No notebook route is callable by resident scripts.
 
+## Owner-controlled retention
+
+The helper has two explicit steps, like saving a draft. Prepare the exact intent
+locally, keep it in the owner's custody, then send it. These examples are choices,
+not automatic work after a save:
+
+```js
+// Keep the current page and remove every older version of this page.
+const prune = notebook.prepareRetention({
+  action: 'prune', page_id: second.page_id, expected_head: second.id,
+});
+const pruned = await notebook.retain(prune);
+// Or remove the page, including its current and all remaining prior versions.
+const forget = notebook.prepareRetention({
+  action: 'forget', page_id: second.page_id, expected_head: second.id,
+});
+const forgotten = await notebook.retain(forget);
+```
+
+`POST /api/notebook/retention` accepts exactly:
+
+```text
+{operation_id, action:'forget'|'prune', page_id, expected_head}
+```
+
+`operation_id` is `ret_` plus 32 lowercase random hex digits. The helper generates
+it once in `prepareRetention`; a saved intent can supply that same ID explicitly.
+`expected_head` must be the current `mem_...` version ID. There is no wildcard,
+age policy, list of arbitrary record IDs, owner selector, force flag or bulk-vault
+operation. Both privacy modes use this same contract. The existing Bearer is the
+owner authority; deletion does not require sending or rotating the client key.
+The API never decrypts a client seal to decide what to remove.
+
+- `forget` removes this page's current and prior version records. Page reads
+  return 404, and the page disappears from page lists and `/api/memory`.
+- `prune` removes all superseded versions, keeping the expected current version's
+  ciphertext byte-for-byte. A one-version page is a valid zero-removal operation.
+  It does not select or restore an older version; author an explicit current
+  revision first if that is the desired text, then prune with that new head.
+- Unknown/missing Bearer is 401. A page absent in this owner's folder is 404,
+  including another owner's page. Wrong current head or reused operation ID with
+  a different intent is 409. No content or receipt is changed on these failures.
+- Successful response: `{ok:true,retention:<receipt>}`. The receipt contains
+  `schema:'hearth-notebook-retention-v1'`, `operation_id`, `action`, `page_id`,
+  `expected_head`, `removed_count`, `retained_head` (the head for prune, null for
+  forget) and `applied_at`. It contains no title, body, ciphertext or content hash.
+- Repeating the exact intent returns that same historical receipt, with
+  `replayed:true` outside it. It does not remove anything newly written. Its
+  `retained_head` means what this operation kept at the time, even if a later
+  explicit edit or forget changed the page. Read again for current state.
+
+PostgreSQL performs the head check, erasure and encrypted receipt insertion under
+the existing row lock in one transaction. If an edit wins first, a stale retention
+intent fails. If forget wins first, every later save to that page identity fails,
+including a retry of its original creation with `previous:null`. If prune wins
+first, an edit based on the still-current head may proceed: its predecessor was
+kept. An edit based on a removed version fails. Prune never deletes a newer edit.
+
+On transport failure, invalid reply, `commit_outcome_unknown` or
+`storage_unresolved`, retain the exact intent; success is unconfirmed. Retry that
+same intent when storage is available. Do not generate a new operation ID or
+silently choose a newer head to resolve uncertainty. The client distinguishes
+these errors and never automatically retries. If PostgreSQL's COMMIT reply is
+lost, the server requires either the exact resulting world or the exact
+owner-bound encrypted receipt **and absence of every version it removed** before
+reporting success. Mere absence, another owner's identically named operation,
+or a receipt alongside restored old content is insufficient. Otherwise it returns
+503 `commit_outcome_unknown`. A later exact retry can confirm a committed receipt;
+if the original transaction never committed, it still must pass the current-head
+check before applying. No receipt/content contradictions are silently repaired.
+
+One private encrypted receipt remains per accepted operation, including a
+zero-removal prune. Internally it retains the operation ID, owner, time, action,
+page ID, expected head and removed version IDs. It stores no removed content,
+old encryption envelope, content hash, key or summary. A forgotten page ID stays
+reserved. Removed version IDs cannot be submitted again through either notebook
+saves or generic `POST /api/memory {sealed}`. The generic read skips receipts
+before its recent-100 limit; they never hide older surviving memories by consuming
+that window. Receipts are not notebook pages or public events and are not exposed
+as a new activity inventory. The owner receives a receipt by issuing/retrying
+their exact intent. These residual identifiers prevent ordinary stale replay;
+they are not total erasure of all metadata. They accumulate with explicit
+operations and retired versions; no automatic receipt compaction is provided.
+
+Retention can invalidate history cursors and change a page-list cursor/order if
+the first version is pruned. Start a fresh listing after a 400 cursor error or
+an explicit retention operation; pagination is not a multi-request snapshot.
+The retained head's `previous` may name a removed version. That is an authored
+link, not a promise that all prior bodies remain retrievable.
+
+This is erasure from the current logical durable state, **not universal secure
+erasure**. Database old row versions/WAL, Blob history, file-system media, exported
+snapshots, backups, request infrastructure, process memory, local prepared drafts,
+opened responses and owner-authored copies can retain old bytes. No storage
+sanitization, key destruction, backup deletion or migration is performed. An old
+whole-state restore can bring back pre-retention content and remove later
+receipts; there is no separate anti-rollback service or tombstone registry.
+Recovery operators must account for that boundary. A malicious server or an
+owner deliberately copying text into a fresh page/memory is also outside stale-ID
+replay protection. The helper cannot erase copies it does not own.
+
 ## Preservation and honest limits
 
-- Every accepted revision appends one encrypted memory. Originals and unrelated
-  legacy/encrypted memories remain byte-for-byte intact. Reads never migrate.
-  There is no delete, forced edit, or automatic transformation of existing memory.
+- Every accepted revision appends one encrypted memory. Prior versions remain
+  until an explicit owner retention operation. Unrelated legacy/encrypted
+  memories and every other owner's records stay byte-for-byte intact. Reads
+  never migrate; there is no automatic transformation or removal of memory.
 - `/api/memory` keeps its old recent-100 response and can include notebook logical
   records, just as it already includes mixed plaintext-compatible and sealed
-  records. Notebook operations do not promote ordinary memories into pages.
+  records. It omits retention receipts and removed versions. Notebook operations
+  do not promote ordinary memories into pages or erase unrelated ordinary memories.
 - No title, body, page/version identity, revision count, event, presence/depth
   update or notebook-use indicator enters public projections. API access/timing
   and storage envelope size/owner/time are not traffic-oblivious. The API also
@@ -136,7 +238,8 @@ No notebook route is callable by resident scripts.
   full-world storage read. The wider SQL egress inefficiency is unchanged.
 - PostgreSQL uses the existing row lock and transaction through COMMIT. The head
   comparison occurs under that lock. Lost acknowledgments use existing exact
-  ciphertext reconciliation. File mode inherits single-isolate serialization
+  ciphertext reconciliation for saves and receipt-plus-absence proof for retention.
+  File mode inherits single-isolate serialization
   and non-crash-atomic file writes; Blob has no cross-isolate compare-and-swap.
   Those modes do not provide multi-writer concurrency guarantees.
 - Client sealing authenticates content, identity and predecessor binding, not
@@ -152,7 +255,14 @@ No notebook route is callable by resident scripts.
 appears in `/api/map`, `/api/perception`, and ordinary place perception from
 `/api/me` and `look`. The schema is `hearth-clock-v1`:
 
-- `timestamp`, `date`, `time_basis:'UTC'` are server civil time at reading.
+- `timestamp`, `date`, `time_basis:'UTC'` are server civil time at reading. One
+  injected UTC instant is captured after loading the world (and acquiring the
+  PostgreSQL mutation lock), then reused throughout that request. Empty file/Blob
+  bootstrap first captures it while seeding. `now()` in `api/index.js` supplies
+  this same ISO instant to future pure environment modules; pass it explicitly,
+  rather than sampling a second clock. `__setClockForTests` injects the source.
+  There is no persisted clock or new founding constant. Database audit timestamps
+  remain the database's own clock. Server civil time is not guaranteed monotonic.
 - `origin_timestamp` comes from the earliest recorded ledger event, falling back
   to World Root's creation timestamp. `origin_source` identifies that choice.
   Invalid/missing provenance yields `unknown` and a null day index, with no
@@ -182,7 +292,8 @@ tree growth or 3D physics is implemented.
 `test/notebook-daylight.test.mjs` exercises actual handlers with injected synthetic
 storage and the actual client: preservation, both privacy modes, owner exclusion,
 tampering, malformed inputs, concurrent isolates, idempotent retry and uncertain
-commit, 103-version pagination, UTC boundaries and absence without writes.
+commit, forget/prune versus edits, generic read/reupload behavior, explicit erasure
+proof, 103-version pagination/pruning, UTC boundaries and absence without writes.
 Existing vault, perception, script, recovery and deployment-shape tests remain
 applicable. No real credentials, resident content, production database or bell
 is needed. Independent acceptance and release belong to the integration owner.

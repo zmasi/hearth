@@ -1,5 +1,9 @@
 # Notebook/daylight candidate verification
 
+Historical receipt for the initial candidate, preserved in commit `bc58c5f`.
+The statements below describe that checkpoint. Current owner-controlled retention
+and subsequent verification are recorded in [NOTEBOOK-RETENTION-VERIFICATION.md](NOTEBOOK-RETENTION-VERIFICATION.md).
+
 Codex local implementation and verification, October 23, 2026 (Pacific).
 Independent acceptance/release is pending. No commit, push, merge or deployment.
 

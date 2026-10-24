@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import test from 'node:test';
-import { randomBytes } from 'node:crypto';
+import { createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
 import { createVaultKey, sealMemory } from '../client/vault.mjs';
 import { createNotebook } from '../client/notebook.mjs';
 import { buildModel, daylightLabel } from '../observer/trails.mjs';
+import { validateWorld } from '../scripts/lib/recovery.mjs';
 
 let isolate = 0;
 const copy = structuredClone;
@@ -21,7 +22,7 @@ class Database {
   pool() {
     const db = this;
     return {
-      async query(sql) { assert.match(sql, /^SELECT world/); return { rows: [{ world: copy(db.world) }] }; },
+      async query(sql) { assert.match(sql, /^SELECT world/); if (db.readUnavailable) throw new Error('synthetic read unavailable'); return { rows: [{ world: copy(db.world) }] }; },
       async connect() {
         let pending, unlock;
         return {
@@ -32,7 +33,12 @@ class Database {
               return { rows: [{ world: copy(db.world) }] };
             }
             if (sql.startsWith('UPDATE hearth_ledger')) { pending = JSON.parse(values[0]); db.updates++; return { rowCount: 1 }; }
-            if (sql === 'COMMIT') { db.world = pending; unlock(); unlock = null; if (db.loseAck) throw new Error('synthetic lost ack'); }
+            if (sql === 'COMMIT') {
+              if (!db.dropCommit) db.world = pending;
+              unlock(); unlock = null;
+              const hook = db.afterCommit; db.afterCommit = null; if (hook) await hook();
+              if (db.loseAck || db.dropCommit) throw new Error('synthetic lost ack');
+            }
             if (sql === 'ROLLBACK') { pending = null; unlock?.(); unlock = null; }
             return { rows: [] };
           },
@@ -294,4 +300,278 @@ test('discovery and Trails: public daylight is visible; notebook discovery offer
   assert.equal(look.json.perception.clock.phase, 'sunrise');
   const html = await request('GET', '/trails/');
   assert.match(html.text, /id="daylight"/);
+});
+
+const retention = (page, action = 'forget', extra = {}) => ({ operation_id: id('ret'), action,
+  page_id: page.page_id, expected_head: page.id ?? page.sealed.id, ...extra });
+const retain = (request, who, operation) => request('POST', '/api/notebook/retention', operation, who.key);
+function openSyntheticReceipt(stored, bearer) {
+  const { storage, id, agentId, agentHandle, createdAt } = stored;
+  const aad = JSON.stringify({ storage, id, agentId, agentHandle, createdAt });
+  const key = hkdfSync('sha256', Buffer.from(bearer), Buffer.from(stored.salt, 'base64url'),
+    Buffer.from(`hearth/private-memory/bearer/v1\n${aad}`), 32);
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(stored.nonce, 'base64url'));
+  decipher.setAAD(Buffer.from(aad)); decipher.setAuthTag(Buffer.from(stored.tag, 'base64url'));
+  return JSON.parse(Buffer.concat([decipher.update(Buffer.from(stored.ciphertext, 'base64url')), decipher.final()]).toString());
+}
+
+test('retention: forget removes every version from both APIs and storage, preserving every unrelated record', async () => {
+  const { db, request, alice, bob } = await setup();
+  db.world.memories.push({ id: 'legacy_untouched', agentHandle: alice.handle, summary: 'LEGACY_KEPT', extra: [1] });
+  await request('POST', '/api/memory', { summary: 'ORDINARY_KEPT' }, alice.key);
+  const other = draft(); await request('POST', '/api/notebook', other, bob.key);
+  const unrelated = draft(); await request('POST', '/api/notebook', unrelated, alice.key);
+  const before = copy(db.world);
+  const first = draft(); await request('POST', '/api/notebook', first, alice.key);
+  const head = draft({ page_id: first.page_id, previous: first.id }); await request('POST', '/api/notebook', head, alice.key);
+  const removed = copy(db.world.memories.slice(-2));
+  const operation = retention(head), result = await retain(request, alice, operation);
+  assert.equal(result.status, 200); assert.equal(result.json.retention.removed_count, 2);
+  assert.equal(result.json.retention.retained_head, null);
+  assert.equal((await request('GET', `/api/notebook?page_id=${first.page_id}`, undefined, alice.key)).status, 404);
+  assert.deepEqual((await request('GET', '/api/notebook', undefined, alice.key)).json.pages.map(p => p.id), [unrelated.id]);
+  const memory = (await request('GET', '/api/memory', undefined, alice.key)).json;
+  assert.deepEqual(memory.map(m => m.id), [unrelated.id, before.memories[1].id, 'legacy_untouched']);
+  assert.deepEqual(db.world.memories.slice(0, before.memories.length), before.memories);
+  assert.equal(db.world.memories.length, before.memories.length + 1, 'one content-free receipt, no removed records');
+  assert.deepEqual(openSyntheticReceipt(db.world.memories.at(-1), alice.key), {
+    id: operation.operation_id, agentHandle: alice.handle, visibility: 'agent_private', createdAt: result.json.retention.applied_at,
+    retention: { schema: 'hearth-notebook-retention-v1', action: 'forget', page_id: head.page_id, expected_head: head.id, removed: [first.id, head.id] },
+  }, 'independent synthetic decryption verifies no hidden body, envelope, or content hash remains in the marker');
+  validateWorld(db.world); // The recovery format still accepts the opaque encrypted receipt unchanged.
+  assert.deepEqual({ ...db.world, memories: before.memories }, before);
+  for (const rec of removed) assert.equal(JSON.stringify(db.world).includes(rec.ciphertext), false);
+  for (const secret of [head.title, head.body]) assert.equal(result.text.includes(secret), false);
+  const saved = copy(db.world.memories);
+  assert.equal((await retain(request, alice, operation)).json.replayed, true); assert.deepEqual(db.world.memories, saved);
+  for (const input of [first, head, draft({ page_id: head.page_id }), draft({ page_id: head.page_id, previous: head.id }),
+    draft({ id: first.id })]) assert.equal((await request('POST', '/api/notebook', input, alice.key)).status, 409);
+  assert.deepEqual(db.world.memories, saved);
+});
+
+test('retention client: sealed and compatible pages can prune then forget; stale drafts and generic sealed reuploads are refused', async () => {
+  for (const mode of ['sealed', 'compatible']) {
+    const { db, request, alice } = await setup();
+    const client = clientFor(request, alice, { mode, rootKey: createVaultKey() });
+    const firstDraft = client.prepare({ title: 'FORGET_TITLE', body: 'FORGET_BODY' }), first = await client.save(firstDraft);
+    const secondDraft = client.prepare({ page_id: first.page_id, previous: first.id, title: 'KEEP_TITLE', body: 'KEEP_BODY' });
+    const head = await client.save(secondDraft), headCipher = copy(db.world.memories.at(-1));
+    const prune = client.prepareRetention({ action: 'prune', page_id: head.page_id, expected_head: head.id });
+    const receipt = await client.retain(prune);
+    assert.equal(receipt.removed_count, 1); assert.equal(receipt.retained_head, head.id);
+    assert.deepEqual(openSyntheticReceipt(db.world.memories.at(-1), alice.key), {
+      id: prune.operation_id, agentHandle: alice.handle, visibility: 'agent_private', createdAt: receipt.applied_at,
+      retention: { schema: 'hearth-notebook-retention-v1', action: 'prune', page_id: head.page_id, expected_head: head.id, removed: [first.id] },
+    });
+    assert.deepEqual((await client.read({ page_id: head.page_id })).pages, [head]);
+    assert.deepEqual(db.world.memories[0], headCipher, 'chosen current ciphertext stays byte-for-byte');
+    assert.deepEqual((await request('GET', '/api/memory', undefined, alice.key)).json.map(m => m.id), [head.id]);
+    assert.deepEqual(await client.retain(prune), receipt);
+    await assert.rejects(client.save(firstDraft), { code: 'conflict_or_integrity' });
+    if (mode === 'sealed') assert.equal((await request('POST', '/api/memory', { sealed: firstDraft.sealed }, alice.key)).status, 409);
+    const forget = client.prepareRetention({ action: 'forget', page_id: head.page_id, expected_head: head.id });
+    assert.equal((await client.retain(forget)).removed_count, 1);
+    assert.deepEqual((await client.read()).pages, []);
+    assert.deepEqual((await request('GET', '/api/memory', undefined, alice.key)).json, []);
+    await assert.rejects(client.save(secondDraft), { code: 'conflict_or_integrity' });
+    assert.deepEqual(await client.retain(prune), receipt, 'old receipt reports the old operation, never recreates a pruned head');
+    const keptDraft = JSON.stringify(firstDraft);
+    assert.ok(keptDraft.includes(mode === 'sealed' ? 'ciphertext' : 'FORGET_BODY'), 'owner drafts are not erased by server retention');
+  }
+});
+
+test('retention: invalid inputs, stale heads, operation reuse and cross-owner guesses cause no mutation or content disclosure', async () => {
+  const { db, request, alice, bob } = await setup();
+  const page = draft(); await request('POST', '/api/notebook', page, alice.key);
+  const operation = retention(page), before = copy(db.world), updates = db.updates;
+  for (const input of [{ ...operation, action: 'all' }, { ...operation, page_id: [page.page_id] },
+    { ...operation, expected_head: null }, { ...operation, expected_head: [page.id] },
+    { ...operation, operation_id: [operation.operation_id] }, { ...operation, owner: alice.handle },
+    { ...operation, keep: 0 }, { ...operation, body: 'PRIVATE_BODY' }]) {
+    const out = await retain(request, alice, input); assert.equal(out.status, 400); assert.equal(out.text.includes('PRIVATE_'), false);
+  }
+  assert.equal((await retain(request, alice, { ...operation, expected_head: id('mem') })).status, 409);
+  assert.equal((await retain(request, bob, operation)).status, 404);
+  assert.equal((await request('POST', '/api/notebook/retention', operation)).status, 401);
+  assert.deepEqual(db.world, before); assert.equal(db.updates, updates);
+  assert.equal((await retain(request, alice, operation)).status, 200);
+  const after = copy(db.world);
+  assert.equal((await retain(request, alice, { ...operation, action: 'prune' })).status, 409);
+  assert.equal((await retain(request, alice, { ...operation, page_id: id('page') })).status, 409);
+  assert.deepEqual(db.world, after);
+});
+
+test('retention: cross-isolate forget versus edit accepts exactly one; late retries cannot resurrect a forgotten page', async () => {
+  for (const forgetFirst of [true, false]) {
+    const { db, request, alice, cold } = await setup();
+    const first = draft(); await request('POST', '/api/notebook', first, alice.key);
+    const other = await cold(), edit = draft({ page_id: first.page_id, previous: first.id }), operation = retention(first);
+    const editCall = () => invoke(other.default, 'POST', '/api/notebook', edit, alice.key);
+    const forgetCall = () => retain(request, alice, operation);
+    const outcomes = await Promise.all(forgetFirst ? [forgetCall(), editCall()] : [editCall(), forgetCall()]);
+    assert.deepEqual(outcomes.map(r => r.status).sort(), [200, 409]);
+    const forgetResult = outcomes[forgetFirst ? 0 : 1];
+    if (forgetResult.status === 200) {
+      assert.equal((await editCall()).status, 409); assert.equal((await request('POST', '/api/notebook', first, alice.key)).status, 409);
+      assert.equal(db.world.memories.some(m => [first.id, edit.id].includes(m.id)), false);
+    } else {
+      assert.deepEqual((await request('GET', `/api/notebook?page_id=${first.page_id}`, undefined, alice.key)).json.versions.map(v => v.id), [edit.id, first.id]);
+    }
+  }
+});
+
+test('retention: competing prune/forget and prune/edit stay atomic under the same row lock', async () => {
+  const { request, alice, cold } = await setup();
+  const first = draft(); await request('POST', '/api/notebook', first, alice.key);
+  const head = draft({ page_id: first.page_id, previous: first.id }); await request('POST', '/api/notebook', head, alice.key);
+  const other = await cold();
+  const prune = retention(head, 'prune'), forget = retention(head);
+  const results = await Promise.all([retain(request, alice, prune), invoke(other.default, 'POST', '/api/notebook/retention', forget, alice.key)]);
+  assert.equal(results[1].status, 200);
+  assert.ok([200, 404].includes(results[0].status));
+  assert.deepEqual((await request('GET', '/api/memory', undefined, alice.key)).json, []);
+  const page = draft(); await request('POST', '/api/notebook', page, alice.key);
+  const edit = draft({ page_id: page.page_id, previous: page.id });
+  const pair = await Promise.all([retain(request, alice, retention(page, 'prune')), invoke(other.default, 'POST', '/api/notebook', edit, alice.key)]);
+  assert.equal(pair[1].status, 200); assert.ok([200, 409].includes(pair[0].status));
+  assert.equal((await request('GET', `/api/notebook?page_id=${page.page_id}`, undefined, alice.key)).json.versions[0].id, edit.id);
+});
+
+test('retention: pruning exceeds the legacy read window, never deletes the chosen current page, and does not consume generic read slots', async () => {
+  const { db, request, alice } = await setup();
+  await request('POST', '/api/memory', { summary: 'KEPT_OLD_MEMORY' }, alice.key);
+  let head = draft(); await request('POST', '/api/notebook', head, alice.key);
+  const firstId = head.id;
+  for (let i = 0; i < 102; i++) { head = draft({ page_id: head.page_id, previous: head.id }); await request('POST', '/api/notebook', head, alice.key); }
+  const cipher = copy(db.world.memories.at(-1)), operation = retention(head, 'prune');
+  assert.equal((await retain(request, alice, operation)).json.retention.removed_count, 102);
+  assert.deepEqual(db.world.memories.find(m => m.id === head.id), cipher);
+  assert.equal((await request('GET', `/api/notebook?page_id=${head.page_id}`, undefined, alice.key)).json.versions.length, 1);
+  assert.equal((await request('GET', `/api/notebook?page_id=${head.page_id}&before=${firstId}`, undefined, alice.key)).status, 400);
+  for (let i = 0; i < 100; i++) assert.equal((await retain(request, alice, retention(head, 'prune'))).json.retention.removed_count, 0);
+  const memory = (await request('GET', '/api/memory', undefined, alice.key)).json;
+  assert.equal(memory.length, 2); assert.equal(memory[1].summary, 'KEPT_OLD_MEMORY');
+});
+
+test('retention: lost commit ACK with a later unrelated commit reconciles an exact owner receipt and removed records', async () => {
+  const { db, request, alice, bob, cold } = await setup();
+  const page = draft(); await request('POST', '/api/notebook', page, alice.key);
+  const other = await cold(), operation = retention(page);
+  db.loseAck = true;
+  db.afterCommit = async () => { assert.equal((await invoke(other.default, 'POST', '/api/memory', { summary: 'LATER_UNRELATED' }, bob.key)).status, 200); };
+  const result = await retain(request, alice, operation);
+  assert.equal(result.status, 200); assert.equal(result.json.retention.removed_count, 1);
+  const saved = copy(db.world);
+  assert.equal((await retain(request, alice, operation)).json.replayed, true); assert.deepEqual(db.world, saved);
+});
+
+test('retention: an uncommitted deletion is unresolved, preserves content, then retries once without duplicate receipts', async () => {
+  const { db, request, alice } = await setup();
+  const page = draft(); await request('POST', '/api/notebook', page, alice.key);
+  const operation = retention(page), before = copy(db.world); db.dropCommit = true;
+  const unresolved = await retain(request, alice, operation);
+  assert.equal(unresolved.status, 503); assert.equal(unresolved.json.error_class, 'commit_outcome_unknown');
+  assert.equal(unresolved.text.includes('PRIVATE_'), false); assert.deepEqual(db.world, before);
+  db.dropCommit = false;
+  assert.equal((await retain(request, alice, operation)).status, 200);
+  const saved = copy(db.world); assert.equal((await retain(request, alice, operation)).json.replayed, true); assert.deepEqual(db.world, saved);
+});
+
+test('retention client: a committed deletion with an unavailable receipt read stays unresolved and is safe to retry exactly', async () => {
+  const { db, request, alice } = await setup();
+  const client = clientFor(request, alice, { mode: 'compatible' });
+  const page = await client.save(client.prepare({ title: 'PRIVATE_TITLE', body: 'PRIVATE_BODY' }));
+  const operation = client.prepareRetention({ action: 'forget', page_id: page.page_id, expected_head: page.id });
+  db.loseAck = true; db.afterCommit = async () => { db.readUnavailable = true; };
+  await assert.rejects(client.retain(operation), { code: 'commit_outcome_unknown', status: 503 });
+  assert.equal(db.world.memories.some(m => m.id === page.id), false);
+  const saved = copy(db.world); db.readUnavailable = false; db.loseAck = false;
+  assert.equal((await client.retain(operation)).removed_count, 1); assert.deepEqual(db.world, saved);
+});
+
+test('retention: absence without the receipt, or receipt with restored content, is not commit proof', async () => {
+  for (const fault of ['missing_receipt', 'restored_content']) {
+    const { db, request, alice } = await setup();
+    const page = draft(); await request('POST', '/api/notebook', page, alice.key);
+    const cipher = copy(db.world.memories[0]), operation = retention(page); db.loseAck = true;
+    db.afterCommit = async () => {
+      if (fault === 'missing_receipt') db.world.memories = [];
+      else db.world.memories.push(cipher);
+    };
+    const result = await retain(request, alice, operation);
+    assert.equal(result.status, 503); assert.equal(result.json.error_class, 'commit_outcome_unknown');
+    if (fault === 'restored_content') {
+      db.loseAck = false;
+      const before = copy(db.world), replay = await retain(request, alice, operation);
+      assert.equal(replay.status, 409); assert.equal(replay.json.error_class, 'memory_integrity'); assert.deepEqual(db.world, before);
+    }
+  }
+});
+
+test('retention: a save whose ACK is lost and which is then forgotten cannot reconcile or retry as live content', async () => {
+  const { db, request, alice, cold } = await setup();
+  const page = draft(), other = await cold(); db.loseAck = true;
+  db.afterCommit = async () => {
+    assert.equal((await invoke(other.default, 'POST', '/api/notebook/retention', retention(page), alice.key)).status, 200);
+  };
+  const saved = await request('POST', '/api/notebook', page, alice.key);
+  assert.equal(saved.status, 503); assert.equal(saved.json.error_class, 'commit_outcome_unknown');
+  const before = copy(db.world);
+  assert.equal((await request('POST', '/api/notebook', page, alice.key)).status, 409);
+  assert.deepEqual((await request('GET', '/api/memory', undefined, alice.key)).json, []); assert.deepEqual(db.world, before);
+});
+
+test('retention: a different owner receipt using the same operation ID cannot prove a failed deletion', async () => {
+  const { db, request, alice, bob } = await setup();
+  const page = draft(); await request('POST', '/api/notebook', page, alice.key); await request('POST', '/api/notebook', page, bob.key);
+  const operation = retention(page); await retain(request, bob, operation);
+  const before = copy(db.world); db.dropCommit = true;
+  const result = await retain(request, alice, operation);
+  assert.equal(result.status, 503); assert.deepEqual(db.world, before);
+});
+
+test('retention: private receipts and erased bodies never enter public projections or scripts, and corruption fails closed', async () => {
+  const { db, request, alice, bob } = await setup();
+  const page = draft(); await request('POST', '/api/notebook', page, alice.key);
+  const operation = retention(page); assert.equal((await retain(request, alice, operation)).status, 200);
+  const before = copy(db.world), updates = db.updates;
+  for (const route of ['/api/map', '/api/events', '/api/ledger', '/health', '/api/physics', '/.well-known/agent-world.json', '/mcp', '/skill.md', '/api/clock', '/api/me', '/api/perception']) {
+    const out = await request('GET', route, undefined, alice.key);
+    for (const privateValue of [operation.operation_id, page.page_id, page.id, page.title, page.body]) assert.equal(out.text.includes(privateValue), false, route);
+  }
+  assert.deepEqual((await request('GET', '/api/memory', undefined, bob.key)).json, []);
+  for (const action of ['retention', 'forget', 'prune']) assert.equal((await request('POST', '/api/action',
+    { action: 'pin', targetKind: 'thing', targetId: 't_board', verb: 'private_probe', instructions: [{ do: action }] }, alice.key)).status, 400);
+  assert.deepEqual(db.world, before); assert.equal(db.updates, updates);
+  db.world.memories.at(-1).tag = 'A'.repeat(22);
+  const corrupt = copy(db.world);
+  const refused = await request('POST', '/api/notebook', draft({ page_id: page.page_id }), alice.key);
+  assert.equal(refused.status, 409); assert.equal(refused.json.error_class, 'memory_integrity'); assert.deepEqual(db.world, corrupt);
+});
+
+test('retention client: failed transport and unbound or content-bearing receipts never masquerade as a confirmed operation', async () => {
+  const { request, alice } = await setup();
+  const client = clientFor(request, alice, { mode: 'compatible' });
+  const page = await client.save(client.prepare({ title: 'PRIVATE_TITLE', body: 'PRIVATE_BODY' }));
+  const operation = client.prepareRetention({ action: 'forget', page_id: page.page_id, expected_head: page.id });
+  const receipt = await client.retain(operation);
+  for (const extra of [{ operation_id: id('ret') }, { page_id: id('page') }, { expected_head: id('mem') }, { retained_head: page.id }, { body: 'PRIVATE_BODY' }, { removed_count: -1 }]) {
+    const liar = clientFor(request, alice, { mode: 'compatible', fetchImpl: async () => ({ status: 200, json: async () => ({ ok: true, retention: { ...receipt, ...extra } }) }) });
+    await assert.rejects(liar.retain(operation), e => e.code === 'bad_response' && !e.message.includes('PRIVATE_'));
+  }
+  const offline = clientFor(request, alice, { mode: 'compatible', fetchImpl: async () => { throw new Error('PRIVATE_BODY'); } });
+  await assert.rejects(offline.retain(operation), e => e.code === 'transport_unresolved' && !e.message.includes('PRIVATE_'));
+});
+
+test('daylight: exactly one injected UTC instant is used throughout each read and mutation', async () => {
+  const { mod, request, alice } = await setup();
+  let calls = 0;
+  const start = Date.parse('2026-12-01T06:59:59.999Z');
+  mod.__setClockForTests(() => new Date(start + calls++).toISOString());
+  const perception = (await request('GET', '/api/perception', undefined, alice.key)).json;
+  assert.equal(calls, 1); assert.equal(perception.clock.timestamp, perception.here.clock.timestamp);
+  assert.equal(perception.clock.phase, 'sunrise');
+  const look = (await request('POST', '/api/action', { action: 'look' }, alice.key)).json;
+  assert.equal(calls, 2); assert.equal(look.event.createdAt, look.perception.clock.timestamp);
+  assert.equal(look.perception.clock.phase, 'day');
 });

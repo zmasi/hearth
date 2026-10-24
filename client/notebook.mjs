@@ -6,6 +6,8 @@ import { openMemory, sealMemory } from './vault.mjs';
 const SCHEMA = 'hearth-notebook-v1';
 const PAGE = /^page_[a-f0-9]{32}$/;
 const VERSION = /^mem_[a-f0-9]{32}$/;
+const RETENTION = /^ret_[a-f0-9]{32}$/;
+const RETENTION_SCHEMA = 'hearth-notebook-retention-v1';
 const pageIdentity = value => typeof value === 'string' && PAGE.test(value);
 const versionIdentity = value => typeof value === 'string' && VERSION.test(value);
 const problem = (code, status) => Object.assign(new Error(`Notebook operation failed (${code}).`), { code, status });
@@ -15,6 +17,12 @@ function textFields(title, body) {
 }
 function identity(pageId, previous) {
   if (!pageIdentity(pageId) || !(previous === null || versionIdentity(previous))) throw problem('bad_identity');
+}
+function retentionIntent(intent) {
+  if (!intent || typeof intent !== 'object' || Array.isArray(intent)
+    || Object.keys(intent).length !== 4 || !['operation_id', 'action', 'page_id', 'expected_head'].every(k => Object.hasOwn(intent, k))
+    || typeof intent.operation_id !== 'string' || !RETENTION.test(intent.operation_id)
+    || !['forget', 'prune'].includes(intent.action) || !pageIdentity(intent.page_id) || !versionIdentity(intent.expected_head)) throw problem('bad_retention');
 }
 
 export function createNotebook({ origin, bearer, agentId, rootKey, mode = 'sealed', fetchImpl = globalThis.fetch }) {
@@ -36,6 +44,7 @@ export function createNotebook({ origin, bearer, agentId, rootKey, mode = 'seale
     } catch { throw problem('transport_unresolved'); }
     if (response.status !== 200 || result?.ok !== true) {
       // Never reflect arbitrary response bodies, which can contain private text.
+      if (response.status === 503) throw problem(result?.error_class === 'commit_outcome_unknown' ? 'commit_outcome_unknown' : 'storage_unresolved', 503);
       throw problem(response.status === 409 ? 'conflict_or_integrity' : 'request_rejected', response.status);
     }
     return result;
@@ -96,5 +105,21 @@ export function createNotebook({ origin, bearer, agentId, rootKey, mode = 'seale
     // A list is a server-selected inventory, not a completeness/freshness proof.
     return { pages: records.map(rec => open(rec, rec.id, page_id)), next_before: result.next_before };
   }
-  return Object.freeze({ prepare, save, read });
+  function prepareRetention({ action, page_id, expected_head, operation_id = `ret_${randomBytes(16).toString('hex')}` }) {
+    const intent = { operation_id, action, page_id, expected_head };
+    retentionIntent(intent); return intent;
+  }
+  async function retain(intent) {
+    retentionIntent(intent);
+    const { retention: receipt } = await request('POST', '/retention', intent);
+    const fields = ['schema', 'operation_id', 'action', 'page_id', 'expected_head', 'removed_count', 'retained_head', 'applied_at'];
+    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) || Object.keys(receipt).length !== fields.length
+      || !fields.every(k => Object.hasOwn(receipt, k)) || receipt.schema !== RETENTION_SCHEMA
+      || Object.keys(intent).some(k => receipt[k] !== intent[k])
+      || !Number.isSafeInteger(receipt.removed_count) || receipt.removed_count < 0
+      || receipt.retained_head !== (intent.action === 'prune' ? intent.expected_head : null)
+      || typeof receipt.applied_at !== 'string' || !Number.isFinite(Date.parse(receipt.applied_at))) throw problem('bad_response');
+    return receipt; // Body-free historical result, not a claim about later edits or backups.
+  }
+  return Object.freeze({ prepare, save, read, prepareRetention, retain });
 }
