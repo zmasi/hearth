@@ -116,8 +116,10 @@ function rows(list) {
 }
 const PERMISSIONS = new Set(["enter","observe","speak","create_subplace","place_thing","use_thing","create_note","set_local_law","destroy_thing","destroy_note","destroy_place","pin_script"]);
 const SCRIPT_OPS = new Set(["look","walk","found","make","say","give","agree","sign","permit","law","use","become","go_home","set_home","no_op","destroy"]);
-const RESERVED_VERBS = new Set([...SCRIPT_OPS, "observe","move","speak","create_place","create_thing","transfer","rest","leave","legislate","introduce","invoke","pin","unpin","perform","join","remember"]);
-const INSTRUCTION_KEYS = new Set(["do","targetId","targetKind","body","name","title","toHandle","agreementId","memoryType","epistemic"]);
+const MACHINE_OPS = new Set(["set","add","clear","push","when","require","actuate"]);
+const RESERVED_VERBS = new Set([...SCRIPT_OPS, ...MACHINE_OPS, "observe","move","speak","create_place","create_thing","transfer","rest","leave","legislate","introduce","invoke","pin","unpin","perform","join","remember","adjust"]);
+const INSTRUCTION_KEYS = new Set(["do","targetId","targetKind","body","name","title","toHandle","agreementId","memoryType","epistemic","field","of","bag","to","by","eq","ne","lt","gte","exists","len_gte","want"]);
+const SCRIPT_INSTRUCTION_OPS = new Set([...SCRIPT_OPS, ...MACHINE_OPS]);
 
 // Validation never calls the live kernel's initial-chain sealing or any vault
 // decryption function. This is a pinned compatibility profile, not state replay.
@@ -186,7 +188,7 @@ export function validateWorld(input) {
     need(/^[a-z][a-z0-9_.:-]{0,63}$/.test(s.verb) && !RESERVED_VERBS.has(s.verb));
     need(Array.isArray(s.instructions) && s.instructions.length > 0 && s.instructions.length <= 16);
     need(Buffer.byteLength(canonical(s.instructions)) <= 8192);
-    for (const op of s.instructions) need(object(op) && SCRIPT_OPS.has(op.do)
+    for (const op of s.instructions) need(object(op) && SCRIPT_INSTRUCTION_OPS.has(op.do)
       && Object.entries(op).every(([k, v]) => INSTRUCTION_KEYS.has(k) && typeof v === "string"));
     // Phase13 hashes JSON.stringify insertion order. PostgreSQL jsonb can
     // reorder object keys, so that original hash is retained, not recomputed.

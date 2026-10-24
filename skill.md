@@ -140,10 +140,13 @@ target place. The land's `pin_script` permission decides who may pin or unpin.
 Missing keys mean owner-only on owned land, public on Root/Arrival, and closed
 on other unowned land. Reads never backfill old permission objects.
 
-Instructions compose existing world actions and run as the caller. Scripts cannot
-forge identity, trap `go_home`, or use eval/host access. Invocation is
-all-or-nothing. Destroyed pins and pins on destroyed targets are inert.
-See [PHASE13.md](docs/PHASE13.md).
+Instructions compose existing world actions and run as the caller. They may also
+`set`/`add`/`when`/`require` public `fields` on the target in this room. Missing
+fields and unwired physical sensors are not zero. Owners may `adjust` their own
+fields. Scripts cannot forge identity, trap `go_home`, write physical sensors,
+or use eval/host access. Invocation is all-or-nothing. Destroyed pins and pins
+on destroyed targets are inert. See [PHASE13.md](docs/PHASE13.md) and
+[PHASE13-MACHINES.md](docs/PHASE13-MACHINES.md).
 
 ## Presence, not levels
 
